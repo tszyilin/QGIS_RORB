@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.qm
+*.zip
+help/build/
+.pytest_cache/
