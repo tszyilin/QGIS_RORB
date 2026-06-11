@@ -1,0 +1,25 @@
+﻿<?xml version = '1.0' encoding = 'UTF-8'?>
+<plugins>
+  <pyqgis_plugin name="Runoff Model Builder" version="1.1">
+    <description>Builds RORB and URBS control vector from a catchment.</description>
+    <about>Runoff Model Builder: Builds RORB and URBS control vector from a catchment delineated as shapefiles. Supports configurable snap tolerance to fix reach/confluence/centroid misalignment.</about>
+    <version>1.1</version>
+    <qgis_minimum_version>3.0</qgis_minimum_version>
+    <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
+    <file_name>runoff_model.zip</file_name>
+    <icon></icon>
+    <author_name>Tom Norman</author_name>
+    <download_url>https://raw.githubusercontent.com/tszyilin/QGIS_RORB/master/runoff_model.zip</download_url>
+    <uploaded_by>tszyilin</uploaded_by>
+    <create_date>2026-06-11</create_date>
+    <update_date>2026-06-11</update_date>
+    <experimental>False</experimental>
+    <deprecated>False</deprecated>
+    <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
+    <repository>https://github.com/tszyilin/QGIS_RORB</repository>
+    <tags>runoff,hydrology,stormwater,rorb,urbs</tags>
+    <downloads>0</downloads>
+    <average_vote>0</average_vote>
+    <rating_votes>0</rating_votes>
+  </pyqgis_plugin>
+</plugins>

@@ -4,5 +4,6 @@ __pycache__/
 *.pyd
 *.qm
 *.zip
+!runoff_model.zip
 help/build/
 .pytest_cache/
