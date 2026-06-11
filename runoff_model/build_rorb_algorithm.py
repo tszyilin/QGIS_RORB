@@ -21,6 +21,7 @@ from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingException,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFileDestination,
                        QgsProcessingParameterNumber,
@@ -95,6 +96,17 @@ class BuildRorbAlgorithm(QgsProcessingAlgorithm):
         )
         self.addParameter(snap_param)
 
+    @staticmethod
+    def _check_fields(source, layer_label, required_fields):
+        existing = {f.name() for f in source.fields()}
+        missing = [f for f in required_fields if f not in existing]
+        if missing:
+            raise QgsProcessingException(
+                f"{layer_label} layer is missing required field(s): "
+                f"{', '.join(missing)}.\n"
+                f"See the algorithm help (?) for full field requirements."
+            )
+
     def processAlgorithm(self, parameters, context, feedback):
         reaches = self.parameterAsSource(parameters, self.IN_REACH, context)
         basins = self.parameterAsSource(parameters, self.IN_BASIN, context)
@@ -102,6 +114,10 @@ class BuildRorbAlgorithm(QgsProcessingAlgorithm):
         confluences = self.parameterAsSource(parameters, self.IN_CONFLUENCE, context)
         sink = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
         tolerance = self.parameterAsDouble(parameters, self.SNAP_TOLERANCE, context)
+
+        self._check_fields(reaches,     'Reach',      ['id', 't', 's'])
+        self._check_fields(centroids,   'Centroid',   ['id', 'fi'])
+        self._check_fields(confluences, 'Confluence', ['id', 'out'])
 
         reach_features = list(reaches.getFeatures())
         confluence_features = list(confluences.getFeatures())
@@ -166,17 +182,36 @@ class BuildRorbAlgorithm(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            "Build RORB model files from GIS layers representing catchment "
-            "reaches, basins, centroids, and confluences.\n\n"
-            "Input layers:\n"
-            "- Reach layer: Line features representing stream reaches\n"
-            "- Basin layer: Polygon features representing catchment basins\n"
-            "- Centroid layer: Point features representing basin centroids\n"
-            "- Confluence layer: Point features representing stream confluences\n\n"
-            "Advanced options:\n"
-            "- Snap tolerance: reach endpoints within this distance (map units) "
-            "of a confluence or centroid will be snapped to it before processing. "
-            "Set to 0 to disable. Default is 1.0.\n\n"
-            "The algorithm generates one file:\n"
-            "- .cat file: RORB control vector\n\n"
+            "Build a RORB control vector (.cat) from GIS layers.\n\n"
+
+            "━━ REQUIRED SHAPEFILE FIELDS ━━\n\n"
+
+            "Reach layer (lines)\n"
+            "  id  : unique reach name (text)\n"
+            "  t   : reach type — 1 Natural, 2 Unlined channel,\n"
+            "                      3 Lined channel, 4 Drowned (integer)\n"
+            "  s   : slope in m/m (decimal, e.g. 0.005)\n\n"
+
+            "Centroid layer (points)\n"
+            "  id  : unique basin name — must match a basin polygon (text)\n"
+            "  fi  : fraction impervious 0.0–1.0 (decimal)\n\n"
+
+            "Basin layer (polygons)\n"
+            "  No attribute fields required.\n"
+            "  Area is calculated from the polygon geometry.\n\n"
+
+            "Confluence layer (points)\n"
+            "  id  : unique confluence name (text)\n"
+            "  out : catchment outlet? 1 = yes, 0 = no (integer)\n"
+            "        Exactly one confluence must have out = 1.\n\n"
+
+            "━━ ADVANCED OPTIONS ━━\n\n"
+
+            "Snap tolerance (map units, default 1.0)\n"
+            "  Reach endpoints within this distance of a confluence or\n"
+            "  centroid are snapped to it before processing. Set to 0\n"
+            "  to disable. Increase if you still get topology errors.\n\n"
+
+            "━━ OUTPUT ━━\n\n"
+            "  .cat file: RORB control vector\n"
         )

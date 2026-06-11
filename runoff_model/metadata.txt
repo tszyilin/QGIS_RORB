@@ -7,7 +7,7 @@
 name=Runoff Model Builder
 qgisMinimumVersion=3.0
 description=Builds RORB and URBS control vector from a catchment.
-version=1.1
+version=1.2
 author=Tom Norman
 email=tom@ncos.com.au
 
@@ -24,6 +24,7 @@ repository=https://github.com/norman-tom/runoff-model
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
 changelog=
+v1.2: Add required field validation and detailed help strings.
 v1.1: Add snap tolerance parameter to RORB and URBS algorithms.
 v1.0: Initial release - forked from runoff Runoff Model: RORB.
 
