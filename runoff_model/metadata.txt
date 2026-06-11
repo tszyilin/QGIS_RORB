@@ -4,7 +4,7 @@
 # Mandatory items:
 
 [general]
-name=Runoff Model Builder
+name=RORB
 qgisMinimumVersion=3.0
 description=Builds RORB and URBS control vector from a catchment.
 version=1.2

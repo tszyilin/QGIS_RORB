@@ -74,7 +74,7 @@ class RunoffModelProvider(QgsProcessingProvider):
 
         This string should be short (e.g. "Lastools") and localised.
         """
-        return self.tr('Runoff Model Builder')
+        return self.tr('RORB')
 
     def icon(self):
         """
