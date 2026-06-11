@@ -1,0 +1,13 @@
+[general]
+name=RORB Builder
+qgisMinimumVersion=3.16
+description=Full RORB rainfall-runoff routing model reading directly from shapefiles
+version=1.9
+author=Safin
+email=tszyilin@gmail.com
+about=Developed by Safin. Runs a complete RORB non-linear storage routing model from four QGIS shapefile layers (reaches, centroids, junctions, sub-catchment polygons). Supports IL/CL loss model, design rainfall input, and outputs peak flows and hydrographs at all junctions.
+tags=rorb,hydrology,routing,flood,rainfall,runoff
+category=Plugins
+icon=icon.png
+experimental=False
+deprecated=False
