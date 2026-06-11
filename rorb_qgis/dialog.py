@@ -193,6 +193,7 @@ class RorbModelDialog(QDialog):
         self._tabs.addTab(self._tab_catchment(), "Catchment")
         self._tabs.addTab(self._tab_parameters(), "Parameters")
         self._tabs.addTab(self._tab_rainfall(), "Rainfall")
+        self._tabs.addTab(self._tab_storm(), "Storm Setup")
         self._tabs.addTab(self._tab_files(), "Files")
         self._tabs.addTab(self._tab_results(), "Results")
         root.addWidget(self._tabs)
@@ -352,6 +353,307 @@ class RorbModelDialog(QDialog):
         layout.addStretch()
         return w
 
+    # ── Storm Setup tab ───────────────────────────────────────────────────────
+
+    def _tab_storm(self):
+        w = QWidget()
+        root = QVBoxLayout(w)
+        self._storm_data = {}   # holds parsed ifd/tp/arr data
+
+        def browse_row(parent_layout, label, filt, on_load):
+            box = QGroupBox(label)
+            bl = QVBoxLayout(box)
+            row = QHBoxLayout()
+            edit = QLineEdit()
+            edit.setPlaceholderText("(not selected)")
+            edit.setReadOnly(True)
+            btn = QPushButton("Browse…")
+            btn.setFixedWidth(80)
+            btn.clicked.connect(lambda: self._storm_browse(edit, filt, on_load))
+            row.addWidget(edit)
+            row.addWidget(btn)
+            bl.addLayout(row)
+            info = QLabel("")
+            info.setStyleSheet("color: gray; font-size: 8pt;")
+            info.setWordWrap(True)
+            bl.addWidget(info)
+            parent_layout.addWidget(box)
+            return edit, info
+
+        # ── IFD CSV ──────────────────────────────────────────────────────────
+        self._ifd_edit, self._ifd_info = browse_row(
+            root, "IFD CSV  (BOM 'All Design Rainfall Depth')",
+            "CSV files (*.csv);;All (*)", self._storm_load_ifd)
+
+        # ── Temporal pattern CSV ─────────────────────────────────────────────
+        self._tp_edit, self._tp_info = browse_row(
+            root, "Temporal Pattern CSV  (ARR 2016 increments)",
+            "CSV files (*.csv);;All (*)", self._storm_load_tp)
+
+        # ── ARR Data Hub TXT ─────────────────────────────────────────────────
+        self._arr_edit, self._arr_info = browse_row(
+            root, "ARR Data Hub TXT",
+            "Text files (*.txt);;All (*)", self._storm_load_arr)
+
+        # ── Storm selection ──────────────────────────────────────────────────
+        sel_box = QGroupBox("Storm Selection")
+        sel_form = QFormLayout(sel_box)
+
+        self._storm_aep_cb   = QComboBox()
+        self._storm_dur_cb   = QComboBox()
+        self._storm_tp_spin  = QDoubleSpinBox()
+        self._storm_tp_spin.setRange(1, 10); self._storm_tp_spin.setDecimals(0)
+        self._storm_tp_spin.setValue(1); self._storm_tp_spin.setSuffix("  (1 – 10)")
+        self._storm_arf_spin = QDoubleSpinBox()
+        self._storm_arf_spin.setRange(0.01, 1.0); self._storm_arf_spin.setDecimals(3)
+        self._storm_arf_spin.setValue(1.0)
+        self._storm_arf_spin.setToolTip(
+            "Areal Reduction Factor — from RORB / ARR. "
+            "ARF parameters shown in ARR box above for reference.")
+
+        sel_form.addRow("AEP:",             self._storm_aep_cb)
+        sel_form.addRow("Duration:",        self._storm_dur_cb)
+        sel_form.addRow("Temporal Pattern #:", self._storm_tp_spin)
+        sel_form.addRow("ARF (manual):",    self._storm_arf_spin)
+
+        self._storm_preview = QLabel("—")
+        self._storm_preview.setWordWrap(True)
+        self._storm_preview.setStyleSheet("font-size: 9pt; color: #2c6fad;")
+        sel_form.addRow("Storm preview:", self._storm_preview)
+
+        root.addWidget(sel_box)
+
+        for cb in (self._storm_aep_cb, self._storm_dur_cb):
+            cb.currentIndexChanged.connect(self._storm_update_preview)
+        for sp in (self._storm_tp_spin, self._storm_arf_spin):
+            sp.valueChanged.connect(self._storm_update_preview)
+
+        # ── Generate button ──────────────────────────────────────────────────
+        gen_btn = QPushButton("▶  Generate Storm & Run Model")
+        gen_btn.setMinimumHeight(36)
+        gen_btn.clicked.connect(self._storm_generate_and_run)
+        root.addWidget(gen_btn)
+
+        note = QLabel(
+            "Workflow: IFD depth × ARF × temporal pattern % → rainfall series → "
+            "IL/CL from ARR → run engine on current catchment layers."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray; font-size: 8pt;")
+        root.addWidget(note)
+        root.addStretch()
+        return w
+
+    def _storm_browse(self, edit, filt, callback):
+        path, _ = QFileDialog.getOpenFileName(self, "Open file", "", filt)
+        if path:
+            edit.setText(path)
+            callback(path)
+
+    def _storm_load_ifd(self, path):
+        try:
+            from .core.storm import parse_ifd_csv
+            aeps, rows, meta = parse_ifd_csv(path)
+            self._storm_data['ifd_aeps'] = aeps
+            self._storm_data['ifd_rows'] = rows
+
+            self._storm_aep_cb.blockSignals(True)
+            self._storm_aep_cb.clear()
+            self._storm_aep_cb.addItems(aeps)
+            self._storm_aep_cb.blockSignals(False)
+
+            self._storm_dur_cb.blockSignals(True)
+            self._storm_dur_cb.clear()
+            for r in rows:
+                self._storm_dur_cb.addItem(r['label'], r['minutes'])
+            self._storm_dur_cb.blockSignals(False)
+
+            loc = meta.get('location') or ''
+            lat = meta.get('lat')
+            lon = meta.get('lon')
+            self._ifd_info.setText(
+                f"{loc}  lat={lat:.4f}  lon={lon:.4f}  "
+                f"({len(rows)} durations, {len(aeps)} AEPs)"
+                if lat else f"{len(rows)} durations, {len(aeps)} AEPs"
+            )
+            self._storm_update_preview()
+        except Exception as e:
+            self._ifd_info.setText(f"Error: {e}")
+
+    def _storm_load_tp(self, path):
+        try:
+            from .core.storm import parse_temporal_patterns
+            patterns = parse_temporal_patterns(path)
+            self._storm_data['tp_patterns'] = patterns
+            durs  = sorted(set(p['duration_min'] for p in patterns))
+            bands = sorted(set(p['aep_band'] for p in patterns))
+            self._tp_info.setText(
+                f"{len(patterns)} patterns  |  "
+                f"durations: {durs[:5]}{'…' if len(durs) > 5 else ''}  |  "
+                f"bands: {', '.join(bands)}"
+            )
+            self._storm_update_preview()
+        except Exception as e:
+            self._tp_info.setText(f"Error: {e}")
+
+    def _storm_load_arr(self, path):
+        try:
+            from .core.storm import parse_arr_txt
+            data = parse_arr_txt(path)
+            self._storm_data['arr'] = data
+            il = data.get('il')
+            cl = data.get('cl')
+            larf = data.get('longarf', {})
+            zone = larf.get('zone', '')
+            params_str = '  '.join(f'{k}={v}' for k, v in larf.items()
+                                   if k != 'zone') if larf else '(none)'
+            self._arr_info.setText(
+                f"IL={il} mm   CL={cl} mm/hr\n"
+                f"LONGARF zone: {zone}   params: {params_str}"
+            )
+            # Auto-fill IL/CL in Parameters tab
+            if il is not None:
+                self._il.setValue(il)
+            if cl is not None:
+                self._cl.setValue(cl)
+        except Exception as e:
+            self._arr_info.setText(f"Error: {e}")
+
+    def _storm_update_preview(self):
+        try:
+            from .core.storm import get_ifd_depth, get_temporal_pattern, aep_to_band
+            rows     = self._storm_data.get('ifd_rows', [])
+            patterns = self._storm_data.get('tp_patterns', [])
+            if not rows:
+                self._storm_preview.setText("Load IFD CSV to see preview.")
+                return
+
+            aep      = self._storm_aep_cb.currentText()
+            dur_min  = self._storm_dur_cb.currentData()
+            tp_num   = int(self._storm_tp_spin.value())
+            arf      = self._storm_arf_spin.value()
+            band     = aep_to_band(aep)
+
+            depth = get_ifd_depth(rows, aep, dur_min)
+            if depth is None:
+                self._storm_preview.setText("Burst depth not found for this AEP/Duration.")
+                return
+
+            catchment_depth = depth * arf
+            lines = [
+                f"AEP band: {band}",
+                f"Burst depth: {depth:.1f} mm",
+                f"ARF: {arf:.3f}  →  Catchment depth: {catchment_depth:.1f} mm",
+            ]
+
+            if patterns:
+                incs, dt_min = get_temporal_pattern(patterns, dur_min, band, tp_num)
+                if incs:
+                    dt_hr   = dt_min / 60.0
+                    n_steps = len(incs)
+                    lines += [
+                        f"Temporal pattern: {n_steps} steps × {dt_min} min (dt={dt_hr:.4f} hr)",
+                        f"Pattern total: {sum(incs):.1f}%  "
+                        f"(max step: {max(incs):.1f}% = {catchment_depth*max(incs)/100:.1f} mm)",
+                    ]
+                else:
+                    lines.append(
+                        f"No pattern for {dur_min} min / {band}  "
+                        f"(check TP CSV covers this duration)"
+                    )
+
+            self._storm_preview.setText("\n".join(lines))
+        except Exception as e:
+            self._storm_preview.setText(f"Preview error: {e}")
+
+    def _storm_generate_and_run(self):
+        from .core.storm import (get_ifd_depth, get_temporal_pattern,
+                                  aep_to_band, build_rainfall_series)
+        rows     = self._storm_data.get('ifd_rows', [])
+        patterns = self._storm_data.get('tp_patterns', [])
+
+        if not rows:
+            QMessageBox.warning(self, "Storm Setup", "Load an IFD CSV first.")
+            return
+        if not patterns:
+            QMessageBox.warning(self, "Storm Setup", "Load a Temporal Pattern CSV first.")
+            return
+
+        aep     = self._storm_aep_cb.currentText()
+        dur_min = self._storm_dur_cb.currentData()
+        tp_num  = int(self._storm_tp_spin.value())
+        arf     = self._storm_arf_spin.value()
+        band    = aep_to_band(aep)
+
+        depth = get_ifd_depth(rows, aep, dur_min)
+        if depth is None:
+            QMessageBox.warning(self, "Storm Setup",
+                                f"No IFD depth found for AEP={aep}, Duration={dur_min} min.")
+            return
+
+        incs, dt_min = get_temporal_pattern(patterns, dur_min, band, tp_num)
+        if not incs:
+            QMessageBox.warning(self, "Storm Setup",
+                                f"No temporal pattern for {dur_min} min / {band} / TP{tp_num}.")
+            return
+
+        rain_ts = build_rainfall_series(depth, arf, incs)
+        dt_hr   = dt_min / 60.0
+
+        # Validate layers
+        errors = self._validate_layers()
+        if errors:
+            self._tabs.setCurrentIndex(5)   # Results tab
+            self._log.clear()
+            for e in errors:
+                self._log_msg(f"✗ {e}")
+            return
+
+        # Build params (same as _on_run but with storm-generated rainfall)
+        params = dict(
+            reach_lyr=self._reach_row.layer(),
+            cent_lyr=self._cent_row.layer(),
+            junc_lyr=self._junc_row.layer(),
+            basin_lyr=self._basin_row.layer(),
+            fld_rid=self._reach_row.field("id"),
+            fld_slope=self._reach_row.field("slope"),
+            fld_type=self._reach_row.field("type"),
+            fld_cid=self._cent_row.field("id"),
+            fld_fi=self._cent_row.field("fi"),
+            fld_jid=self._junc_row.field("id"),
+            fld_out=self._junc_row.field("out"),
+            kc=self._kc.value(),
+            m=self._m.value(),
+            dt=dt_hr,
+            loss_model='il_cl' if self._loss_combo.currentIndex() == 0 else 'proportional',
+            il=self._il.value(),
+            cl=self._cl.value(),
+            prop_loss=self._prop.value(),
+            total_mm=sum(rain_ts),
+            duration=len(rain_ts) * dt_hr,
+            rain_mode='custom',
+            peak_pos=0.33,
+            custom_pattern=','.join(f'{v:.4f}' for v in rain_ts),
+            _storm_label=f"{aep}  {dur_min} min  TP{tp_num}  ARF={arf:.3f}",
+        )
+
+        self._log.clear()
+        self._log_msg(
+            f"Storm: {aep}  {self._storm_dur_cb.currentText()}  TP{tp_num}\n"
+            f"  burst depth={depth:.1f} mm  ARF={arf:.3f}  "
+            f"catchment depth={depth*arf:.1f} mm\n"
+            f"  dt={dt_hr:.4f} hr  steps={len(rain_ts)}"
+        )
+        self._run_btn.setEnabled(False)
+        self._run_btn.setText("Running…")
+        self._tabs.setCurrentIndex(5)   # Results tab
+
+        self._worker = SimWorker(params)
+        self._worker.log_msg.connect(self._log_msg)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
     def _tab_files(self):
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -490,7 +792,7 @@ class RorbModelDialog(QDialog):
 
         self._run_files_btn.setEnabled(False)
         self._run_files_btn.setText("Running…")
-        self._tabs.setCurrentIndex(4)   # Results tab
+        self._tabs.setCurrentIndex(5)   # Results tab
 
         self._worker = FilesWorker(catg, out, stm, csv_path)
         self._worker.log_msg.connect(self._log_msg)
@@ -545,7 +847,7 @@ class RorbModelDialog(QDialog):
 
         self._run_btn.setEnabled(False)
         self._run_btn.setText("Running…")
-        self._tabs.setCurrentIndex(3)
+        self._tabs.setCurrentIndex(5)   # Results tab
 
         self._worker = SimWorker(params)
         self._worker.log_msg.connect(self._log_msg)
