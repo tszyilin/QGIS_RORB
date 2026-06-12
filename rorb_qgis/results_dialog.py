@@ -116,7 +116,7 @@ class _ScanWorker(QThread):
 
     def run(self):
         try:
-            from .core.engine import parse_out_hydrograph
+            from .core.engine import parse_out_hydrograph, parse_out_rainfall
             fnames = sorted(
                 f for f in os.listdir(self.folder)
                 if f.lower().endswith('.out')
@@ -130,13 +130,19 @@ class _ScanWorker(QThread):
                     nodes, time_axis, dt = parse_out_hydrograph(path)
                 except Exception:
                     nodes, time_axis, dt = {}, [], None
+                try:
+                    rain_t, rain_mm, _ = parse_out_rainfall(path)
+                except Exception:
+                    rain_t, rain_mm = [], []
                 out[path] = {
-                    'fname':  fname,
-                    'path':   path,
-                    'parsed': parsed,
-                    'nodes':  nodes,
-                    'time':   time_axis,
-                    'dt':     dt,
+                    'fname':   fname,
+                    'path':    path,
+                    'parsed':  parsed,
+                    'nodes':   nodes,
+                    'time':    time_axis,
+                    'dt':      dt,
+                    'rain_t':  rain_t,
+                    'rain_mm': rain_mm,
                 }
             self.result.emit(out)
         except Exception:
@@ -453,19 +459,27 @@ class RorbResultsDialog(QDialog):
     def _tab_export(self):
         w = QWidget(); lay = QVBoxLayout(w)
 
+        # Settings
         box = QGroupBox("Export Settings")
         form = QFormLayout(box)
-
-        self._exp_aep_combo = QComboBox(); self._exp_aep_combo.setMinimumWidth(160)
-        self._exp_aep_combo.currentIndexChanged.connect(self._refresh_export_info)
-        form.addRow("AEP:", self._exp_aep_combo)
 
         self._exp_node_combo = QComboBox(); self._exp_node_combo.setMinimumWidth(240)
         self._exp_node_combo.currentIndexChanged.connect(self._refresh_export_info)
         form.addRow("Node (print point):", self._exp_node_combo)
+
+        folder_row = QHBoxLayout()
+        self._exp_folder_edit = QLineEdit()
+        self._exp_folder_edit.setReadOnly(True)
+        self._exp_folder_edit.setPlaceholderText("Browse to output folder …")
+        folder_btn = QPushButton("Browse…"); folder_btn.setFixedWidth(80)
+        folder_btn.clicked.connect(self._browse_export_folder)
+        folder_row.addWidget(self._exp_folder_edit)
+        folder_row.addWidget(folder_btn)
+        form.addRow("Save folder:", folder_row)
         lay.addWidget(box)
 
-        self._exp_info = QLabel("No data loaded.")
+        # Info panel
+        self._exp_info = QLabel("Scan a folder and select a node to see the critical summary.")
         self._exp_info.setWordWrap(True)
         self._exp_info.setFont(QFont("Courier New", 8))
         self._exp_info.setStyleSheet(
@@ -473,27 +487,31 @@ class RorbResultsDialog(QDialog):
         lay.addWidget(self._exp_info)
 
         hint = QLabel(
-            "Rep TP hydrograph: the temporal pattern whose peak is closest to the "
-            "mean across all TPs for the critical duration (ARR 2016 Book 4 Ch3 s2.3).\n"
-            "All TPs: all temporal patterns for the critical duration in one CSV "
-            "with a mean-peak reference column.")
+            "Exports one CSV per AEP using the critical duration and representative TP "
+            "(ARR 2016 Book 4 Ch3 s2.3).  Files are named  {AEP}_critical_hydrograph.csv  "
+            "and  {AEP}_critical_hyetograph.csv.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:gray;font-size:8pt;")
         lay.addWidget(hint)
 
         brow = QHBoxLayout()
-        rep_btn = QPushButton("Export Critical Duration — Rep TP Hydrograph …")
-        rep_btn.setMinimumHeight(34)
-        rep_btn.clicked.connect(self._export_rep_tp)
-        all_btn = QPushButton("Export Critical Duration — All TPs …")
-        all_btn.setMinimumHeight(34)
-        all_btn.clicked.connect(self._export_all_tps)
-        brow.addWidget(rep_btn)
-        brow.addWidget(all_btn)
+        hydro_btn = QPushButton("Export Hydrographs  (one CSV per AEP)")
+        hydro_btn.setMinimumHeight(36)
+        hydro_btn.clicked.connect(self._export_hydros)
+        hyeto_btn = QPushButton("Export Hyetographs  (one CSV per AEP)")
+        hyeto_btn.setMinimumHeight(36)
+        hyeto_btn.clicked.connect(self._export_hyetos)
+        brow.addWidget(hydro_btn)
+        brow.addWidget(hyeto_btn)
         brow.addStretch()
         lay.addLayout(brow)
         lay.addStretch()
         return w
+
+    def _browse_export_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select output folder", "")
+        if folder:
+            self._exp_folder_edit.setText(folder)
 
     # ── Scan ─────────────────────────────────────────────────────────────────
 
@@ -652,18 +670,18 @@ class RorbResultsDialog(QDialog):
                 if n not in all_nodes:
                     all_nodes.append(n)
 
-        for combo in (self._aep_combo, self._exp_aep_combo):
+        self._aep_combo.blockSignals(True)
+        self._aep_combo.clear()
+        for a in aeps:
+            self._aep_combo.addItem(a)
+        self._aep_combo.blockSignals(False)
+
+        for combo in (self._crit_node_combo, self._exp_node_combo):
             combo.blockSignals(True)
             combo.clear()
-            for a in aeps:
-                combo.addItem(a)
+            for n in all_nodes:
+                combo.addItem(n)
             combo.blockSignals(False)
-
-        self._crit_node_combo.blockSignals(True)
-        self._crit_node_combo.clear()
-        for n in all_nodes:
-            self._crit_node_combo.addItem(n)
-        self._crit_node_combo.blockSignals(False)
 
         if aeps:
             self._populate_critical_table()
@@ -859,121 +877,107 @@ class RorbResultsDialog(QDialog):
     # ── Export ────────────────────────────────────────────────────────────────
 
     def _refresh_export_info(self):
-        aep = self._exp_aep_combo.currentText()
-        if not aep:
-            self._exp_info.setText("No AEP selected.")
-            return
-
-        entries = self._entries_for_aep(aep)
-        all_nodes = []
-        for e in entries:
-            for n in e['nodes']:
-                if n not in all_nodes:
-                    all_nodes.append(n)
-        self._exp_node_combo.blockSignals(True)
-        self._exp_node_combo.clear()
-        for n in all_nodes:
-            self._exp_node_combo.addItem(n)
-        self._exp_node_combo.blockSignals(False)
-
         node = self._exp_node_combo.currentText() or None
-        crit = self._compute_critical(aep, node)
-        if not crit:
-            self._exp_info.setText("No data for this AEP.")
+        aeps = self._all_aeps()
+        if not aeps:
+            self._exp_info.setText("No data loaded.")
             return
 
-        lines = [
-            f"AEP             : {aep}",
-            f"Node            : {node or 'outlet'}",
-            f"Critical dur    : {crit['crit_dur']}",
-            f"Mean peak       : {crit['mean_peak']:.3f} m³/s  "
-            f"(across {crit['n_tps']} TPs)",
-            f"Rep TP          : TP{crit['rep_tp']}  "
-            f"(peak = {crit['rep_peak']:.3f} m³/s)",
-            "",
-            "Duration summary (mean peak across TPs):",
-        ]
-        for lbl, mv in sorted(
-                crit['dur_means'].items(), key=lambda x: x[1], reverse=True):
-            mark = "  ← critical" if lbl == crit['crit_dur'] else ""
-            lines.append(f"  {lbl:<14}  {mv:.3f} m³/s{mark}")
+        lines = ["Critical summary per AEP:", ""]
+        for aep in aeps:
+            crit = self._compute_critical(aep, node)
+            if not crit:
+                continue
+            lines.append(
+                f"  {aep:<14}  crit dur: {crit['crit_dur']:<12}  "
+                f"rep TP{crit['rep_tp']}  "
+                f"mean pk: {crit['mean_peak']:.3f}  "
+                f"rep pk: {crit['rep_peak']:.3f} m³/s")
         self._exp_info.setText("\n".join(lines))
 
-    def _export_rep_tp(self):
-        aep  = self._exp_aep_combo.currentText()
-        node = self._exp_node_combo.currentText() or None
-        if not aep:
-            QMessageBox.warning(self, "Export", "Select an AEP first."); return
-        crit = self._compute_critical(aep, node)
-        if not crit:
-            QMessageBox.warning(self, "Export", "No data for this AEP."); return
+    def _aep_to_fname(self, aep):
+        """Convert '1% AEP' → '1pAEP' for use in filenames."""
+        return aep.replace('% AEP', 'pAEP').replace('.', '_').replace(' ', '')
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export rep TP hydrograph", "", "CSV (*.csv)")
-        if not path:
+    def _export_hydros(self):
+        folder = self._exp_folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Export", "Select an output folder first.")
             return
-
-        e = crit['rep_entry']
-        q = self._get_hydro(e, node)
-        t = e.get('time', [])[:len(q)] if q is not None else []
-        if q is None:
-            QMessageBox.warning(self, "Export", "No hydrograph data."); return
-
-        with open(path, 'w', newline='') as f:
-            w = csv_mod.writer(f)
-            w.writerow(["# RORB Results Viewer — Rep TP Hydrograph"])
-            w.writerow([f"# AEP: {aep}   "
-                        f"Critical duration: {crit['crit_dur']}   "
-                        f"Rep TP: TP{crit['rep_tp']}   "
-                        f"Node: {node or 'outlet'}"])
-            w.writerow([f"# Mean peak (all TPs): {crit['mean_peak']:.4f} m3/s"])
-            w.writerow(["Time (hr)", "Flow (m3/s)"])
-            for tv, qv in zip(t, q):
-                w.writerow([f"{tv:.4f}", f"{float(qv):.6f}"])
-        QMessageBox.information(self, "Export", f"Exported:\n{path}")
-
-    def _export_all_tps(self):
-        aep  = self._exp_aep_combo.currentText()
         node = self._exp_node_combo.currentText() or None
-        if not aep:
-            QMessageBox.warning(self, "Export", "Select an AEP first."); return
-        crit = self._compute_critical(aep, node)
-        if not crit:
-            QMessageBox.warning(self, "Export", "No data for this AEP."); return
+        aeps = self._all_aeps()
+        if not aeps:
+            QMessageBox.warning(self, "Export", "No data loaded."); return
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export all TPs", "", "CSV (*.csv)")
-        if not path:
-            return
-
-        tps    = sorted(crit['crit_tps'], key=lambda x: x[0])
-        arrays = []
-        for tp_num, _, e in tps:
+        saved, skipped = [], []
+        for aep in aeps:
+            crit = self._compute_critical(aep, node)
+            if not crit:
+                skipped.append(aep); continue
+            e = crit['rep_entry']
             q = self._get_hydro(e, node)
-            arrays.append(np.array(q) if q is not None else np.array([]))
-        n     = min((len(a) for a in arrays if len(a)), default=0)
-        t_ref = tps[0][2].get('time', []) if tps else []
+            t = e.get('time', [])[:len(q)] if q is not None else []
+            if q is None:
+                skipped.append(aep); continue
 
-        with open(path, 'w', newline='') as f:
-            w = csv_mod.writer(f)
-            w.writerow(["# RORB Results Viewer — All TPs"])
-            w.writerow([f"# AEP: {aep}   "
-                        f"Critical duration: {crit['crit_dur']}   "
-                        f"Node: {node or 'outlet'}"])
-            w.writerow([f"# Mean peak: {crit['mean_peak']:.4f} m3/s   "
-                        f"Rep TP: TP{crit['rep_tp']}"])
-            w.writerow(
-                ["Time (hr)"]
-                + [f"TP{tp_num} (m3/s)" for tp_num, _, _ in tps]
-                + ["Mean Peak (m3/s)"])
-            for i in range(n):
-                tv  = t_ref[i] if i < len(t_ref) else i * 0.1
-                row = [f"{tv:.4f}"]
-                for a in arrays:
-                    row.append(f"{float(a[i]):.6f}" if i < len(a) else "")
-                row.append(f"{crit['mean_peak']:.6f}")
-                w.writerow(row)
+            fname = os.path.join(folder,
+                                 f"{self._aep_to_fname(aep)}_critical_hydrograph.csv")
+            with open(fname, 'w', newline='') as f:
+                w = csv_mod.writer(f)
+                w.writerow(["# RORB Results Viewer — Critical Duration Hydrograph"])
+                w.writerow([f"# AEP: {aep}   "
+                            f"Critical duration: {crit['crit_dur']}   "
+                            f"Rep TP: TP{crit['rep_tp']}   "
+                            f"Node: {node or 'outlet'}"])
+                w.writerow([f"# Mean peak: {crit['mean_peak']:.4f} m3/s   "
+                            f"Rep peak: {crit['rep_peak']:.4f} m3/s"])
+                w.writerow(["Time (hr)", "Flow (m3/s)"])
+                for tv, qv in zip(t, q):
+                    w.writerow([f"{tv:.4f}", f"{float(qv):.6f}"])
+            saved.append(os.path.basename(fname))
 
-        QMessageBox.information(
-            self, "Export",
-            f"Exported {len(tps)} TPs ({n} steps):\n{path}")
+        msg = f"Exported {len(saved)} hydrograph CSV(s) to:\n{folder}"
+        if skipped:
+            msg += f"\n\nSkipped (no data): {', '.join(skipped)}"
+        QMessageBox.information(self, "Export Hydrographs", msg)
+
+    def _export_hyetos(self):
+        folder = self._exp_folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Export", "Select an output folder first.")
+            return
+        node = self._exp_node_combo.currentText() or None
+        aeps = self._all_aeps()
+        if not aeps:
+            QMessageBox.warning(self, "Export", "No data loaded."); return
+
+        saved, skipped = [], []
+        for aep in aeps:
+            crit = self._compute_critical(aep, node)
+            if not crit:
+                skipped.append(aep); continue
+            e      = crit['rep_entry']
+            rain_t  = e.get('rain_t',  [])
+            rain_mm = e.get('rain_mm', [])
+            if not rain_mm:
+                skipped.append(aep); continue
+
+            fname = os.path.join(folder,
+                                 f"{self._aep_to_fname(aep)}_critical_hyetograph.csv")
+            with open(fname, 'w', newline='') as f:
+                w = csv_mod.writer(f)
+                w.writerow(["# RORB Results Viewer — Critical Duration Hyetograph"])
+                w.writerow([f"# AEP: {aep}   "
+                            f"Critical duration: {crit['crit_dur']}   "
+                            f"Rep TP: TP{crit['rep_tp']}"])
+                w.writerow([f"# Catchment-mean rainfall   "
+                            f"Total: {sum(rain_mm):.1f} mm"])
+                w.writerow(["Time (hr)", "Rainfall (mm)"])
+                for tv, rv in zip(rain_t, rain_mm):
+                    w.writerow([f"{tv:.4f}", f"{rv:.4f}"])
+            saved.append(os.path.basename(fname))
+
+        msg = f"Exported {len(saved)} hyetograph CSV(s) to:\n{folder}"
+        if skipped:
+            msg += f"\n\nSkipped (no rainfall data): {', '.join(skipped)}"
+        QMessageBox.information(self, "Export Hyetographs", msg)

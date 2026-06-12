@@ -292,6 +292,68 @@ def parse_stm(path):
     return dt, [depth * p / 100.0 for p in pcts]
 
 
+def parse_out_rainfall(path):
+    """
+    Parse the catchment-mean rainfall hyetograph from a RORB .out file.
+
+    The 'Rainfall, mm' table has columns:
+        Incs  Catchment  SubA  SubB  ...
+    We return the catchment-mean column (index 1).
+
+    Returns
+    -------
+    time_hr  : list of float  — mid-point time of each increment [hr]
+    rain_mm  : list of float  — catchment-mean rainfall per increment [mm]
+    dt_hr    : float          — time step [hr]
+    """
+    lines = Path(path).read_text(errors='replace').splitlines()
+    txt   = '\n'.join(lines)
+
+    # dt from header
+    dt_hr = None
+    m = re.search(r'Time increment.*?=\s*([\d.]+)\s+hours', txt)
+    if m:
+        dt_hr = float(m.group(1))
+
+    # Locate the "Rainfall, mm, in time inc" section
+    start_idx = None
+    for i, line in enumerate(lines):
+        if re.search(r'Rainfall,\s*mm,\s*in time inc', line):
+            start_idx = i
+            break
+    if start_idx is None:
+        return [], [], dt_hr
+
+    # Find the header row containing "Incs"
+    hdr_idx = None
+    for i in range(start_idx, min(start_idx + 10, len(lines))):
+        if re.match(r'\s*Incs', lines[i]):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return [], [], dt_hr
+
+    # Parse data rows — stop at "Tot." summary line
+    rain_mm = []
+    for line in lines[hdr_idx + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('Tot'):
+            break
+        parts = stripped.split()
+        try:
+            rain_mm.append(float(parts[1]))   # catchment-mean column
+        except (ValueError, IndexError):
+            if rain_mm:
+                break
+
+    if dt_hr and rain_mm:
+        time_hr = [i * dt_hr for i in range(len(rain_mm))]
+    else:
+        time_hr = list(range(len(rain_mm)))
+
+    return time_hr, rain_mm, dt_hr
+
+
 def parse_out_hydrograph(path):
     """
     Parse the 'Hydrograph summary' table from a RORB .out file.
