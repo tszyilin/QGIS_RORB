@@ -16,6 +16,58 @@ from .routing import route_rorb
 from .rainfall import apply_il_cl, apply_proportional_loss
 
 
+# ── avg_dist ──────────────────────────────────────────────────────────────────
+
+def compute_avg_dist(catchment) -> float:
+    """
+    Area-weighted average travel distance from each sub-area to the outlet.
+
+    RORB convention: k_i = kc × (length_i / avg_dist)
+    This lets users enter the standard RORB kc value directly.
+    Returns avg_dist in the same units as reach.length() (metres here).
+    """
+    sentinel = catchment._endSentinel
+    nv = len(catchment._vertices)
+    ne = len(catchment._edges)
+
+    # Build downstream adjacency: node_idx -> [(downstream_idx, length)]
+    downstream = {}
+    for i in range(nv):
+        for j in range(ne):
+            dn = catchment._incidenceMatrixDS[i][j]
+            if dn != sentinel:
+                length = catchment._edges[j].length()
+                downstream.setdefault(i, []).append((dn, length))
+
+    outlet_idx = catchment._out
+
+    def path_length(start):
+        total = 0.0
+        cur = start
+        visited = set()
+        while cur != outlet_idx:
+            if cur in visited:
+                break
+            visited.add(cur)
+            nexts = downstream.get(cur, [])
+            if not nexts:
+                break
+            nxt, length = nexts[0]
+            total += length
+            cur = nxt
+        return total
+
+    total_area = 0.0
+    weighted   = 0.0
+    for idx, node in enumerate(catchment._vertices):
+        if isinstance(node, Basin) and node.area > 0:
+            d = path_length(idx)
+            total_area += node.area
+            weighted   += node.area * d
+
+    return weighted / total_area if total_area > 0 else 1.0
+
+
 # ── Topology helpers ──────────────────────────────────────────────────────────
 
 def topological_order(catchment) -> list:
@@ -97,6 +149,10 @@ def run(catchment, kc: float, m: float, dt_hr: float,
 
     time_axis = np.arange(n_steps) * dt_hr
 
+    # RORB convention: k_i = kc × (length_i / avg_dist)
+    # avg_dist in metres (same units as reach.length())
+    avg_dist_m = compute_avg_dist(catchment)
+
     order = topological_order(catchment)
     node_hydros = {}
 
@@ -120,7 +176,8 @@ def run(catchment, kc: float, m: float, dt_hr: float,
                     continue
                 reach = catchment._edges[j]
                 up_hydro = node_hydros.get(up_idx, np.zeros(n_steps))
-                k_reach = kc * reach.length() / 1000.0  # kc × length_km
+                # k = kc × (length / avg_dist)  — RORB standard normalisation
+                k_reach = kc * reach.length() / avg_dist_m
                 routed = route_rorb(up_hydro, k_reach, m, dt_hr)
                 combined += routed
             node_hydros[node_idx] = combined
