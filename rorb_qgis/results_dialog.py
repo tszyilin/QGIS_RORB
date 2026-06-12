@@ -150,9 +150,10 @@ class RorbResultsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("RORB Results Viewer")
         self.setMinimumSize(1120, 780)
-        self._files   = {}
-        self._worker  = None
-        self._tp_rows = {}   # tp_num -> (QCheckBox, color_str)
+        self._files        = {}
+        self._worker       = None
+        self._tp_rows      = {}   # tp_num -> (QCheckBox, color_str)
+        self._crit_rows    = []   # list of crit dicts, one per AEP
         self._build_ui()
 
     # ── UI ───────────────────────────────────────────────────────────────────
@@ -178,9 +179,10 @@ class RorbResultsDialog(QDialog):
         root.addLayout(frow)
 
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._tab_files(),  "Files")
-        self._tabs.addTab(self._tab_viewer(), "Hydrograph Viewer")
-        self._tabs.addTab(self._tab_export(), "Export")
+        self._tabs.addTab(self._tab_files(),    "Files")
+        self._tabs.addTab(self._tab_critical(), "Critical Events")
+        self._tabs.addTab(self._tab_viewer(),   "Hydrograph Viewer")
+        self._tabs.addTab(self._tab_export(),   "Export")
         root.addWidget(self._tabs)
 
         btn_row = QHBoxLayout()
@@ -209,7 +211,165 @@ class RorbResultsDialog(QDialog):
         lay.addWidget(self._file_table)
         return w
 
-    # ── Tab 2: Hydrograph Viewer ─────────────────────────────────────────────
+    # ── Tab 2: Critical Events ────────────────────────────────────────────────
+
+    def _tab_critical(self):
+        w = QWidget(); lay = QVBoxLayout(w)
+
+        # Header row
+        hdr = QHBoxLayout()
+        hdr.addWidget(QLabel(
+            "Critical Events  (ARR 2016: mean of TPs  →  critical duration  →  rep TP):"))
+        hdr.addStretch()
+
+        # Node selector
+        hdr.addWidget(QLabel("Node:"))
+        self._crit_node_combo = QComboBox(); self._crit_node_combo.setMinimumWidth(160)
+        self._crit_node_combo.currentIndexChanged.connect(self._populate_critical_table)
+        hdr.addWidget(self._crit_node_combo)
+
+        exp_btn = QPushButton("Export Critical CSV…")
+        exp_btn.clicked.connect(self._export_critical_csv)
+        hdr.addWidget(exp_btn)
+        lay.addLayout(hdr)
+
+        # Summary table
+        self._crit_table = QTableWidget(0, 7)
+        self._crit_table.setHorizontalHeaderLabels([
+            "AEP", "Critical Duration", "Rep TP", "# TPs",
+            "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
+        self._crit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._crit_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._crit_table.setAlternatingRowColors(True)
+        self._crit_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._crit_table.setMaximumHeight(220)
+        self._crit_table.selectionModel().selectionChanged.connect(
+            self._on_crit_row_selected)
+        lay.addWidget(self._crit_table)
+
+        # Plot
+        if HAS_MPL:
+            self._crit_fig    = Figure(figsize=(8, 3.5), tight_layout=True)
+            self._crit_ax     = self._crit_fig.add_subplot(111)
+            self._crit_canvas = FigureCanvas(self._crit_fig)
+            lay.addWidget(self._crit_canvas)
+        else:
+            self._crit_ax = self._crit_canvas = None
+            lay.addWidget(QLabel("Install matplotlib to see plots."))
+
+        return w
+
+    def _populate_critical_table(self):
+        self._crit_rows = []
+        self._crit_table.setRowCount(0)
+
+        node = self._crit_node_combo.currentText() or None
+        aeps = self._all_aeps()
+        if not aeps:
+            return
+
+        for aep in aeps:
+            crit = self._compute_critical(aep, node)
+            if not crit:
+                continue
+
+            # time to peak from rep TP hydrograph
+            rep_e = crit['rep_entry']
+            q     = self._get_hydro(rep_e, node)
+            t     = rep_e.get('time', [])
+            ttp   = 0.0
+            if q is not None and len(q):
+                pk_idx = int(np.argmax(q))
+                ttp = t[pk_idx] if pk_idx < len(t) else 0.0
+
+            crit['ttp']  = ttp
+            crit['aep']  = aep
+            crit['node'] = node
+            self._crit_rows.append(crit)
+
+            row = self._crit_table.rowCount()
+            self._crit_table.insertRow(row)
+            self._crit_table.setItem(row, 0, QTableWidgetItem(aep))
+            self._crit_table.setItem(row, 1, QTableWidgetItem(crit['crit_dur']))
+            tp_it = QTableWidgetItem(str(crit['rep_tp']))
+            tp_it.setTextAlignment(Qt.AlignCenter)
+            self._crit_table.setItem(row, 2, tp_it)
+            n_it = QTableWidgetItem(str(crit['n_tps']))
+            n_it.setTextAlignment(Qt.AlignCenter)
+            self._crit_table.setItem(row, 3, n_it)
+            for col, val, dec in (
+                    (4, crit['mean_peak'], 3),
+                    (5, crit['rep_peak'],  3),
+                    (6, ttp,               2)):
+                it = QTableWidgetItem(f"{val:.{dec}f}")
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self._crit_table.setItem(row, col, it)
+
+    def _on_crit_row_selected(self):
+        if not HAS_MPL:
+            return
+        rows = self._crit_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        idx = rows[0].row()
+        if idx >= len(self._crit_rows):
+            return
+        crit = self._crit_rows[idx]
+        node = crit.get('node')
+
+        rep_e = crit['rep_entry']
+        q     = self._get_hydro(rep_e, node)
+        t     = rep_e.get('time', [])[:len(q)] if q is not None else []
+        if q is None:
+            return
+
+        self._crit_ax.clear()
+
+        # Plot rep TP
+        self._crit_ax.plot(t, q, color='steelblue', linewidth=2,
+                           label=f"Rep TP{crit['rep_tp']}  "
+                                 f"({crit['rep_peak']:.3f} m³/s)")
+        # Mean peak line
+        self._crit_ax.axhline(
+            crit['mean_peak'], color='#111827', linewidth=1.2,
+            linestyle='--',
+            label=f"Mean of {crit['n_tps']} TPs  "
+                  f"({crit['mean_peak']:.3f} m³/s)")
+
+        self._crit_ax.set_xlabel("Time (hr)")
+        self._crit_ax.set_ylabel("Flow (m³/s)")
+        self._crit_ax.set_title(
+            f"{crit['aep']}  |  Critical duration: {crit['crit_dur']}  |  "
+            f"Rep TP{crit['rep_tp']}  |  {node or 'outlet'}",
+            fontsize=9)
+        self._crit_ax.grid(True, alpha=0.25)
+        self._crit_ax.legend(fontsize=8)
+
+        if t:
+            pk_t = t[int(np.argmax(q))]
+            self._crit_ax.set_xlim(0, min(t[-1], pk_t * 3 + 2))
+
+        self._crit_canvas.draw()
+
+    def _export_critical_csv(self):
+        if not self._crit_rows:
+            QMessageBox.warning(self, "Export", "No critical events computed yet.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Critical Events", "", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, 'w', newline='') as f:
+            w = csv_mod.writer(f)
+            w.writerow(["AEP", "Critical Duration", "Rep TP", "Num TPs",
+                        "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
+            for r in self._crit_rows:
+                w.writerow([r['aep'], r['crit_dur'], r['rep_tp'], r['n_tps'],
+                            f"{r['mean_peak']:.4f}", f"{r['rep_peak']:.4f}",
+                            f"{r['ttp']:.3f}"])
+        QMessageBox.information(self, "Export", f"Exported:\n{path}")
+
+    # ── Tab 3: Hydrograph Viewer ──────────────────────────────────────────────
 
     def _tab_viewer(self):
         w = QWidget(); root = QVBoxLayout(w)
@@ -288,7 +448,7 @@ class RorbResultsDialog(QDialog):
         root.addWidget(splitter)
         return w
 
-    # ── Tab 3: Export ─────────────────────────────────────────────────────────
+    # ── Tab 4: Export ─────────────────────────────────────────────────────────
 
     def _tab_export(self):
         w = QWidget(); lay = QVBoxLayout(w)
@@ -484,13 +644,29 @@ class RorbResultsDialog(QDialog):
 
     def _populate_combos(self):
         aeps = self._all_aeps()
+
+        # Collect all node names across all valid entries
+        all_nodes = []
+        for e in self._valid_entries():
+            for n in e['nodes']:
+                if n not in all_nodes:
+                    all_nodes.append(n)
+
         for combo in (self._aep_combo, self._exp_aep_combo):
             combo.blockSignals(True)
             combo.clear()
             for a in aeps:
                 combo.addItem(a)
             combo.blockSignals(False)
+
+        self._crit_node_combo.blockSignals(True)
+        self._crit_node_combo.clear()
+        for n in all_nodes:
+            self._crit_node_combo.addItem(n)
+        self._crit_node_combo.blockSignals(False)
+
         if aeps:
+            self._populate_critical_table()
             self._refresh_viewer()
             self._refresh_export_info()
 
