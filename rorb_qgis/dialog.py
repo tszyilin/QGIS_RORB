@@ -185,12 +185,13 @@ class RorbModelDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("RORB Builder")
         self.setMinimumSize(1050, 740)
-        self._results    = None
-        self._worker     = None
-        self._batch_rows = []
-        self._storm_data = {}
-        self._aep_chks   = {}
-        self._dur_chks   = {}
+        self._results       = None
+        self._worker        = None
+        self._batch_rows    = []
+        self._critical_rows = []
+        self._storm_data    = {}
+        self._aep_chks      = {}
+        self._dur_chks      = {}
         self._build_ui()
 
     def _build_ui(self):
@@ -642,8 +643,10 @@ class RorbModelDialog(QDialog):
                   for lbl, mins in sel_durs
                   for tp in tp_nums]
 
-        self._batch_rows = []
+        self._batch_rows    = []
+        self._critical_rows = []
         self._batch_table.setRowCount(0)
+        self._crit_table.setRowCount(0)
         self._log.clear()
         self._log_msg(
             f"Running {len(combos)} combinations "
@@ -704,6 +707,121 @@ class RorbModelDialog(QDialog):
         self._run_btn.setEnabled(True)
         self._run_status.setText(f"Done. {len(self._batch_rows)} events.")
         self._log_msg(f"Completed. {len(self._batch_rows)} events.")
+        self._compute_critical_events()
+
+    def _compute_critical_events(self):
+        """
+        ARR 2016 Book 4 Ch3 s2.3:
+        - For each AEP x Duration: compute MEAN peak across all TPs
+        - Critical duration = duration with highest mean peak (per AEP)
+        - Representative TP = TP whose peak is closest to that mean
+        """
+        from collections import defaultdict
+        if not self._batch_rows:
+            return
+
+        # Group by AEP -> duration -> list of rows
+        groups = defaultdict(lambda: defaultdict(list))
+        for r in self._batch_rows:
+            groups[r['aep']][(r['dur_label'], r['dur_min'])].append(r)
+
+        critical = []
+        for aep, durations in groups.items():
+            # Mean peak per duration
+            dur_summary = {}
+            for (dur_label, dur_min), rows in durations.items():
+                peaks = [r['peak'] for r in rows]
+                dur_summary[(dur_label, dur_min)] = (float(np.mean(peaks)), rows)
+
+            # Critical duration = highest mean peak
+            (crit_lbl, crit_min), (mean_peak, crit_rows) = max(
+                dur_summary.items(), key=lambda x: x[1][0])
+
+            # Representative TP = closest to mean
+            rep_row = min(crit_rows, key=lambda r: abs(r['peak'] - mean_peak))
+
+            # All mean peaks for this AEP (for logging)
+            dur_means = {lbl: round(v, 3) for (lbl, _), (v, _) in dur_summary.items()}
+
+            critical.append({
+                'aep':       aep,
+                'crit_dur':  crit_lbl,
+                'crit_min':  crit_min,
+                'mean_peak': mean_peak,
+                'rep_tp':    rep_row['tp_num'],
+                'rep_peak':  rep_row['peak'],
+                'ttp':       rep_row['ttp'],
+                'depth_mm':  rep_row['depth_mm'],
+                'hydro':     rep_row['hydro'],
+                'time':      rep_row['time'],
+                'n_tp':      len(crit_rows),
+                'dur_means': dur_means,
+            })
+
+        # Sort by AEP (frequent -> rare)
+        def _aep_sort_key(r):
+            a = r['aep'].replace('%', '')
+            try:
+                return -float(a)   # higher % = more frequent = sort first
+            except ValueError:
+                return 0.0
+
+        critical.sort(key=_aep_sort_key)
+        self._critical_rows = critical
+
+        # Populate critical table
+        self._crit_table.setRowCount(0)
+        for r in critical:
+            row = self._crit_table.rowCount()
+            self._crit_table.insertRow(row)
+            self._crit_table.setItem(row, 0, QTableWidgetItem(r['aep']))
+            self._crit_table.setItem(row, 1, QTableWidgetItem(r['crit_dur']))
+            tp_item = QTableWidgetItem(str(r['rep_tp']))
+            tp_item.setTextAlignment(Qt.AlignCenter)
+            self._crit_table.setItem(row, 2, tp_item)
+            n_item = QTableWidgetItem(str(r['n_tp']))
+            n_item.setTextAlignment(Qt.AlignCenter)
+            self._crit_table.setItem(row, 3, n_item)
+            for col, key, dec in ((4,'mean_peak',3),(5,'rep_peak',3),(6,'ttp',2)):
+                it = QTableWidgetItem(f"{r[key]:.{dec}f}")
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self._crit_table.setItem(row, col, it)
+
+        # Log summary
+        self._log_msg("\n--- Critical Events (ARR 2016 mean-TP method) ---")
+        for r in critical:
+            self._log_msg(
+                f"  {r['aep']:<8}  crit dur = {r['crit_dur']:<10}  "
+                f"mean peak = {r['mean_peak']:.3f} m3/s  "
+                f"rep TP = {r['rep_tp']}  (rep peak = {r['rep_peak']:.3f} m3/s)")
+
+    def _on_critical_row_selected(self):
+        rows = self._crit_table.selectionModel().selectedRows()
+        if not rows or not HAS_MPL:
+            return
+        idx = rows[0].row()
+        if idx >= len(self._critical_rows):
+            return
+        r = self._critical_rows[idx]
+        if not r['hydro']:
+            return
+        self._ax.clear()
+        t = r['time'][:len(r['hydro'])]
+        self._ax.plot(t, r['hydro'], color='steelblue', linewidth=2,
+                      label=f"Rep TP{r['rep_tp']} ({r['rep_peak']:.3f} m3/s)")
+        # also draw mean peak as horizontal dashed line
+        self._ax.axhline(r['mean_peak'], color='gray', linewidth=1,
+                         linestyle='--', label=f"Mean of {r['n_tp']} TPs ({r['mean_peak']:.3f} m3/s)")
+        self._ax.set_xlabel('Time (hr)')
+        self._ax.set_ylabel('Flow (m3/s)')
+        self._ax.set_title(
+            f"{r['aep']}  Critical duration: {r['crit_dur']}  "
+            f"Rep TP: {r['rep_tp']}  depth: {r['depth_mm']:.1f} mm", fontsize=9)
+        self._ax.grid(True, alpha=0.3)
+        self._ax.legend(fontsize=8)
+        pk_t = r['ttp'] if r['ttp'] > 0 else (t[-1] if t else 10)
+        self._ax.set_xlim(0, min(t[-1] if t else 100, pk_t * 3 + 5))
+        self._canvas.draw()
 
     def _on_batch_error(self, msg):
         self._run_btn.setEnabled(True)
@@ -888,6 +1006,29 @@ class RorbModelDialog(QDialog):
             self._on_batch_row_selected)
         layout.addWidget(self._batch_table)
 
+        # ── Critical events (ARR 2016 mean-TP method) ─────────────────────
+        crit_hdr = QHBoxLayout()
+        crit_hdr.addWidget(QLabel(
+            "Critical Events  (ARR 2016: mean of TPs -> critical duration -> rep TP):"))
+        crit_hdr.addStretch()
+        crit_exp = QPushButton("Export Critical CSV...")
+        crit_exp.clicked.connect(self._export_critical_csv)
+        crit_hdr.addWidget(crit_exp)
+        layout.addLayout(crit_hdr)
+
+        self._crit_table = QTableWidget(0, 7)
+        self._crit_table.setHorizontalHeaderLabels([
+            "AEP", "Critical Duration", "Rep TP", "# TPs",
+            "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
+        self._crit_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._crit_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._crit_table.setAlternatingRowColors(True)
+        self._crit_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._crit_table.setMaximumHeight(160)
+        self._crit_table.selectionModel().selectionChanged.connect(
+            self._on_critical_row_selected)
+        layout.addWidget(self._crit_table)
+
         if HAS_MPL:
             self._fig    = Figure(figsize=(6, 3), tight_layout=True)
             self._ax     = self._fig.add_subplot(111)
@@ -912,6 +1053,24 @@ class RorbModelDialog(QDialog):
                 w.writerow([r['aep'], r['dur_label'], r['tp_num'],
                             f"{r['depth_mm']:.1f}",
                             f"{r['peak']:.4f}", f"{r['ttp']:.3f}"])
+        QMessageBox.information(self, "Results", f"Exported:\n{path}")
+
+    def _export_critical_csv(self):
+        if not self._critical_rows:
+            QMessageBox.warning(self, "Results", "Run batch first."); return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export critical events", "", "CSV (*.csv)")
+        if not path: return
+        import csv as csv_mod
+        with open(path, 'w', newline='') as f:
+            w = csv_mod.writer(f)
+            w.writerow(["AEP", "Critical Duration", "Rep TP", "Num TPs",
+                        "Mean Peak (m3/s)", "Rep Peak (m3/s)",
+                        "Catchment depth (mm)", "Time to peak (hr)"])
+            for r in self._critical_rows:
+                w.writerow([r['aep'], r['crit_dur'], r['rep_tp'], r['n_tp'],
+                            f"{r['mean_peak']:.4f}", f"{r['rep_peak']:.4f}",
+                            f"{r['depth_mm']:.1f}", f"{r['ttp']:.3f}"])
         QMessageBox.information(self, "Results", f"Exported:\n{path}")
 
     # ---- .catg export -----------------------------------------------------
