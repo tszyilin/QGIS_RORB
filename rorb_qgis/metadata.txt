@@ -2,7 +2,7 @@
 name=RORB Builder
 qgisMinimumVersion=3.16
 description=Full RORB rainfall-runoff routing model reading directly from shapefiles
-version=2.1
+version=2.2
 author=Safin
 email=tszyilin@gmail.com
 about=Developed by Safin. v2.1: Adds ARR 2016 critical duration and representative temporal pattern selection (Book 4 Ch3 s2.3). After batch run, auto-computes: mean peak across all TPs per AEP/Duration, critical duration (highest mean peak), representative TP (closest to mean). Critical Events table and chart shown in Results tab with dashed mean-peak reference line. Export critical events to CSV.
