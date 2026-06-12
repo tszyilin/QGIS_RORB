@@ -895,10 +895,6 @@ class RorbResultsDialog(QDialog):
                 f"rep pk: {crit['rep_peak']:.3f} m³/s")
         self._exp_info.setText("\n".join(lines))
 
-    def _aep_to_fname(self, aep):
-        """Convert '1% AEP' → '1pAEP' for use in filenames."""
-        return aep.replace('% AEP', 'pAEP').replace('.', '_').replace(' ', '')
-
     def _export_hydros(self):
         folder = self._exp_folder_edit.text().strip()
         if not folder:
@@ -920,8 +916,8 @@ class RorbResultsDialog(QDialog):
             if q is None:
                 skipped.append(aep); continue
 
-            fname = os.path.join(folder,
-                                 f"{self._aep_to_fname(aep)}_critical_hydrograph.csv")
+            stem  = os.path.splitext(crit['rep_entry']['fname'])[0]
+            fname = os.path.join(folder, f"{stem}_hydro.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)
                 w.writerow(["# RORB Results Viewer — Critical Duration Hydrograph"])
@@ -962,8 +958,8 @@ class RorbResultsDialog(QDialog):
             if not rain_mm:
                 skipped.append(aep); continue
 
-            fname = os.path.join(folder,
-                                 f"{self._aep_to_fname(aep)}_critical_hyetograph.csv")
+            stem  = os.path.splitext(crit['rep_entry']['fname'])[0]
+            fname = os.path.join(folder, f"{stem}_rf.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)
                 w.writerow(["# RORB Results Viewer — Critical Duration Hyetograph"])
