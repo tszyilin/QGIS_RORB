@@ -292,6 +292,58 @@ def parse_stm(path):
     return dt, [depth * p / 100.0 for p in pcts]
 
 
+def parse_out_hydrograph(path):
+    """
+    Parse the 'Hydrograph summary' table from a RORB .out file.
+
+    Returns
+    -------
+    nodes      : dict  {node_label: np.ndarray of flow [m³/s]}
+    time_axis  : list  of time values [hr]
+    dt         : float  time step [hr]  (None if only 1 row)
+
+    The table starts with a header row like:
+        Inc    Time   Hyd0001   Hyd0002  …
+    followed by data rows:
+        0    0.00     0.000    0.000  …
+    """
+    lines = Path(path).read_text(errors='replace').splitlines()
+
+    # Locate the "Inc    Time" header row
+    hdr_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'\s*Inc\s+Time\s+', line):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return {}, [], None
+
+    # Node names are every token after 'Inc' and 'Time'
+    node_names = lines[hdr_idx].split()[2:]
+
+    times  = []
+    arrays = [[] for _ in node_names]
+
+    for line in lines[hdr_idx + 1:]:
+        parts = line.split()
+        if len(parts) < 2 + len(node_names):
+            # allow partial rows only if we already have data
+            if times:
+                break
+            continue
+        try:
+            times.append(float(parts[1]))
+            for j in range(len(node_names)):
+                arrays[j].append(float(parts[2 + j]))
+        except ValueError:
+            if times:
+                break
+
+    nodes = {name: np.array(arr) for name, arr in zip(node_names, arrays)}
+    dt    = (times[1] - times[0]) if len(times) >= 2 else None
+    return nodes, times, dt
+
+
 def parse_rorb_csv(path):
     """
     Parse a RORB output CSV file.
