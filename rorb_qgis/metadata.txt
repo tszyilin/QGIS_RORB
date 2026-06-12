@@ -2,7 +2,7 @@
 name=RORB Builder
 qgisMinimumVersion=3.16
 description=Full RORB rainfall-runoff routing model reading directly from shapefiles
-version=2.11
+version=2.12
 author=Safin
 email=tszyilin@gmail.com
 about=Developed by Safin. v2.3: Adds RORB Results Viewer — a separate toolbox that reads a folder of RORB CSV output files (one per AEP/Duration/TP), auto-detects AEP/duration/TP from filenames, computes critical duration and representative TP per ARR 2016 (Book 4 Ch3 s2.3), plots all temporal patterns with per-TP toggles and a mean-peak reference line, and exports the critical rep-TP hydrograph or all TPs for the critical duration to CSV. v2.2: Fix plugin zip packaging. v2.1: Critical duration + rep TP from batch run.

@@ -916,7 +916,9 @@ class RorbResultsDialog(QDialog):
             if q is None:
                 skipped.append(aep); continue
 
-            stem  = os.path.splitext(crit['rep_entry']['fname'])[0]
+            raw   = os.path.splitext(crit['rep_entry']['fname'])[0]
+            m     = re.search(r'aep\d', raw, re.IGNORECASE)
+            stem  = raw[m.start():] if m else raw
             fname = os.path.join(folder, f"{stem}_hydro.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)
@@ -958,7 +960,9 @@ class RorbResultsDialog(QDialog):
             if not rain_mm:
                 skipped.append(aep); continue
 
-            stem  = os.path.splitext(crit['rep_entry']['fname'])[0]
+            raw   = os.path.splitext(crit['rep_entry']['fname'])[0]
+            m     = re.search(r'aep\d', raw, re.IGNORECASE)
+            stem  = raw[m.start():] if m else raw
             fname = os.path.join(folder, f"{stem}_rf.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)

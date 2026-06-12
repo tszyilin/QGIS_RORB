@@ -1,9 +1,9 @@
 <?xml version = '1.0' encoding = 'UTF-8'?>
 <plugins>
-  <pyqgis_plugin name="RORB Builder" version="2.11">
+  <pyqgis_plugin name="RORB Builder" version="2.12">
     <description>Full RORB rainfall-runoff routing model from shapefiles with batch design storm analysis and results viewer</description>
     <about>v2.10: Export tab redesign — folder picker, Export Hydrographs and Export Hyetographs buttons (one CSV per AEP, critical duration rep TP); parses catchment-mean rainfall from .out file. v2.9: Critical Events tab in Results Viewer — summary table (AEP, critical duration, rep TP, mean/rep peak, time to peak) with click-to-plot rep TP hydrograph and mean peak line, plus Export Critical CSV. v2.8: RORB Results Viewer — reads folder of RORBWin .out files, plots all TPs with toggles, exports critical hydros. v2.7: Export all hydrographs to folder. v2.6: Exact ARR 2016 ARF formula. v2.5: Auto-compute ARF. v2.4: TP numbers match RORB convention. v2.1: Batch design storms with ARR 2016 critical duration and rep TP.</about>
-    <version>2.11</version>
+    <version>2.12</version>
     <qgis_minimum_version>3.16</qgis_minimum_version>
     <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
     <file_name>rorb_qgis.zip</file_name>
