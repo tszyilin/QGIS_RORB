@@ -1,22 +1,22 @@
 <?xml version = '1.0' encoding = 'UTF-8'?>
 <plugins>
-  <pyqgis_plugin name="RORB Builder" version="1.9">
-    <description>Export RORB control file (.catg) from GIS layers using pyromb</description>
-    <about>Builds a RORB control vector (.catg) from four QGIS layers (reaches, centroids, confluences, sub-catchment polygons) using the pyromb library. The .catg file can be loaded directly into the RORB application.</about>
-    <version>1.9</version>
+  <pyqgis_plugin name="RORB Builder" version="2.1">
+    <description>Full RORB rainfall-runoff routing model from shapefiles with batch design storm analysis</description>
+    <about>v2.1: Validated RORB routing engine (NSE~0.9999 vs RORBWin). Batch design storm workflow: Network check > ARR TXT > IFD CSV > Temporal Pattern CSV > Parameters > Run all AEP x Duration x TP combinations. Auto-computes critical duration and representative TP (ARR 2016 Book 4 Ch3 s2.3 mean-TP method). Results table + hydrograph viewer + export CSV.</about>
+    <version>2.1</version>
     <qgis_minimum_version>3.16</qgis_minimum_version>
-    <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
+    <homepage>https://github.com/tszyilin/MapThemeToolbox</homepage>
     <file_name>rorb_qgis.zip</file_name>
     <icon></icon>
     <author_name>Safin</author_name>
-    <download_url>https://raw.githubusercontent.com/tszyilin/QGIS_RORB/main/rorb_qgis.zip</download_url>
+    <download_url>https://raw.githubusercontent.com/tszyilin/MapThemeToolbox/main/OneDrive%20-%20Pells%20Sullivan%20Meynink/097_Claude_Code/02_rorb/QGIS_RORB/rorb_qgis.zip</download_url>
     <uploaded_by>tszyilin</uploaded_by>
     <create_date>2026-06-10</create_date>
-    <update_date>2026-06-11</update_date>
+    <update_date>2026-06-12</update_date>
     <experimental>False</experimental>
     <deprecated>False</deprecated>
-    <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
-    <repository>https://github.com/tszyilin/QGIS_RORB</repository>
+    <tracker>https://github.com/tszyilin/MapThemeToolbox/issues</tracker>
+    <repository>https://github.com/tszyilin/MapThemeToolbox</repository>
     <tags>rorb,hydrology,routing,flood,rainfall,runoff</tags>
     <downloads>0</downloads>
     <average_vote>0</average_vote>
