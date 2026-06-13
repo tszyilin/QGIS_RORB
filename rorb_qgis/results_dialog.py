@@ -179,6 +179,10 @@ class RorbResultsDialog(QDialog):
         self._scan_btn = QPushButton("Scan"); self._scan_btn.setFixedWidth(60)
         self._scan_btn.setEnabled(False)
         self._scan_btn.clicked.connect(self._scan_folder)
+        self._scan_btn.setStyleSheet(
+            "QPushButton { background:#16a34a; color:white; font-weight:bold; border-radius:3px; }"
+            "QPushButton:disabled { background:#9ca3af; }"
+            "QPushButton:hover { background:#15803d; }")
         frow.addWidget(self._folder_edit)
         frow.addWidget(browse_btn)
         frow.addWidget(self._scan_btn)
@@ -860,19 +864,10 @@ class RorbResultsDialog(QDialog):
 
         # Update left-panel summary
         if crit:
-            lines = [
-                f"Critical: {crit['crit_dur']}",
-                f"Mean pk:  {crit['mean_peak']:.3f} m³/s",
-                f"Rep TP:   TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)",
-                "",
-                "Dur  →  mean peak:",
-            ]
-            for lbl, mv in sorted(
-                    crit['dur_means'].items(),
-                    key=lambda x: x[1], reverse=True):
-                mark = " ◀" if lbl == crit['crit_dur'] else ""
-                lines.append(f"  {lbl:<12}  {mv:.3f}{mark}")
-            self._peak_summary.setText("\n".join(lines))
+            self._peak_summary.setText(
+                f"Critical: {crit['crit_dur']}\n"
+                f"Mean pk:  {crit['mean_peak']:.3f} m³/s\n"
+                f"Rep TP:   TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)")
 
     # ── Export ────────────────────────────────────────────────────────────────
 
@@ -922,14 +917,7 @@ class RorbResultsDialog(QDialog):
             fname = os.path.join(folder, f"{stem}_hydro.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)
-                w.writerow(["# RORB Results Viewer — Critical Duration Hydrograph"])
-                w.writerow([f"# AEP: {aep}   "
-                            f"Critical duration: {crit['crit_dur']}   "
-                            f"Rep TP: TP{crit['rep_tp']}   "
-                            f"Node: {node or 'outlet'}"])
-                w.writerow([f"# Mean peak: {crit['mean_peak']:.4f} m3/s   "
-                            f"Rep peak: {crit['rep_peak']:.4f} m3/s"])
-                w.writerow(["Time (hr)", "Flow (m3/s)"])
+                w.writerow(["Time (hr)", "Flow (cms)"])
                 for tv, qv in zip(t, q):
                     w.writerow([f"{tv:.4f}", f"{float(qv):.6f}"])
             saved.append(os.path.basename(fname))
@@ -966,12 +954,6 @@ class RorbResultsDialog(QDialog):
             fname = os.path.join(folder, f"{stem}_rf.csv")
             with open(fname, 'w', newline='') as f:
                 w = csv_mod.writer(f)
-                w.writerow(["# RORB Results Viewer — Critical Duration Hyetograph"])
-                w.writerow([f"# AEP: {aep}   "
-                            f"Critical duration: {crit['crit_dur']}   "
-                            f"Rep TP: TP{crit['rep_tp']}"])
-                w.writerow([f"# Catchment-mean rainfall   "
-                            f"Total: {sum(rain_mm):.1f} mm"])
                 w.writerow(["Time (hr)", "Rainfall (mm)"])
                 for tv, rv in zip(rain_t, rain_mm):
                     w.writerow([f"{tv:.4f}", f"{rv:.4f}"])
