@@ -31,6 +31,21 @@ def _network_icon():
     return QIcon(px)
 
 
+def _rplus_icon():
+    """Network Builder icon: red rounded square with R+ text."""
+    from qgis.PyQt.QtGui import QPen
+    px = QPixmap(24, 24); px.fill(Qt.transparent)
+    p = QPainter(px); p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor('#dc2626')); p.setPen(Qt.NoPen)
+    p.drawRoundedRect(0, 0, 24, 24, 4, 4)
+    p.setPen(QColor('white'))
+    f = QFont(); f.setBold(True); f.setPointSize(9)
+    p.setFont(f)
+    p.drawText(px.rect(), Qt.AlignCenter, "R+")
+    p.end()
+    return QIcon(px)
+
+
 def _peak_icon():
     """Viewer icon: stylised hydrograph (rising limb, peak, recession)."""
     from qgis.PyQt.QtGui import QPen, QPainterPath
@@ -58,10 +73,12 @@ def _peak_icon():
 class RorbQgisPlugin:
     def __init__(self, iface):
         self.iface = iface
-        self.action         = None
-        self.action_results = None
-        self.dialog         = None
-        self.results_dialog = None
+        self.action          = None
+        self.action_results  = None
+        self.action_network  = None
+        self.dialog          = None
+        self.results_dialog  = None
+        self.network_dialog  = None
 
     def initGui(self):
         self.action = QAction(
@@ -79,13 +96,24 @@ class RorbQgisPlugin:
         self.iface.addToolBarIcon(self.action_results)
         self.iface.addPluginToMenu('&RORB', self.action_results)
 
+        self.action_network = QAction(
+            _rplus_icon(), 'RORB Network Builder', self.iface.mainWindow())
+        self.action_network.setToolTip(
+            'Digitise RORB centroid, junction and reach layers')
+        self.action_network.triggered.connect(self.run_network)
+        self.iface.addToolBarIcon(self.action_network)
+        self.iface.addPluginToMenu('&RORB', self.action_network)
+
     def unload(self):
         self.iface.removePluginMenu('&RORB', self.action)
         self.iface.removeToolBarIcon(self.action)
         self.iface.removePluginMenu('&RORB', self.action_results)
         self.iface.removeToolBarIcon(self.action_results)
+        self.iface.removePluginMenu('&RORB', self.action_network)
+        self.iface.removeToolBarIcon(self.action_network)
         del self.action
         del self.action_results
+        del self.action_network
 
     def run(self):
         from .dialog import RorbModelDialog
@@ -102,3 +130,11 @@ class RorbQgisPlugin:
         self.results_dialog.show()
         self.results_dialog.raise_()
         self.results_dialog.activateWindow()
+
+    def run_network(self):
+        from .network_builder_dialog import RorbNetworkBuilderDialog
+        if self.network_dialog is None:
+            self.network_dialog = RorbNetworkBuilderDialog(self.iface)
+        self.network_dialog.show()
+        self.network_dialog.raise_()
+        self.network_dialog.activateWindow()
