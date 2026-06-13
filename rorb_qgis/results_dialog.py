@@ -117,14 +117,17 @@ class _ScanWorker(QThread):
     def run(self):
         try:
             from .core.engine import parse_out_hydrograph, parse_out_rainfall
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
             fnames = sorted(
                 f for f in os.listdir(self.folder)
                 if f.lower().endswith('.out')
-                and not f.lower().startswith('rorb'))   # skip RORBWin.out etc.
-            out = {}
-            for i, fname in enumerate(fnames):
-                self.progress.emit(i + 1, len(fnames), fname)
-                path   = os.path.join(self.folder, fname)
+                and not f.lower().startswith('rorb'))
+
+            folder = self.folder
+
+            def _parse_one(fname):
+                path   = os.path.join(folder, fname)
                 parsed = _parse_filename(fname)
                 try:
                     nodes, time_axis, dt = parse_out_hydrograph(path)
@@ -134,16 +137,29 @@ class _ScanWorker(QThread):
                     rain_t, rain_mm, _ = parse_out_rainfall(path)
                 except Exception:
                     rain_t, rain_mm = [], []
-                out[path] = {
-                    'fname':   fname,
-                    'path':    path,
-                    'parsed':  parsed,
-                    'nodes':   nodes,
-                    'time':    time_axis,
-                    'dt':      dt,
-                    'rain_t':  rain_t,
-                    'rain_mm': rain_mm,
-                }
+                return fname, path, parsed, nodes, time_axis, dt, rain_t, rain_mm
+
+            total = len(fnames)
+            out   = {}
+            done  = 0
+
+            with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as ex:
+                futures = {ex.submit(_parse_one, f): f for f in fnames}
+                for fut in as_completed(futures):
+                    fname, path, parsed, nodes, time_axis, dt, rain_t, rain_mm = fut.result()
+                    done += 1
+                    self.progress.emit(done, total, fname)
+                    out[path] = {
+                        'fname':   fname,
+                        'path':    path,
+                        'parsed':  parsed,
+                        'nodes':   nodes,
+                        'time':    time_axis,
+                        'dt':      dt,
+                        'rain_t':  rain_t,
+                        'rain_mm': rain_mm,
+                    }
+
             self.result.emit(out)
         except Exception:
             self.error.emit(traceback.format_exc())
@@ -176,7 +192,7 @@ class RorbResultsDialog(QDialog):
             "Browse to folder containing RORBWin .out files …")
         browse_btn = QPushButton("Browse…"); browse_btn.setFixedWidth(80)
         browse_btn.clicked.connect(self._browse_folder)
-        self._scan_btn = QPushButton("Scan"); self._scan_btn.setFixedWidth(60)
+        self._scan_btn = QPushButton("Scan"); self._scan_btn.setFixedWidth(80)
         self._scan_btn.setEnabled(False)
         self._scan_btn.clicked.connect(self._scan_folder)
         self._scan_btn.setStyleSheet(
