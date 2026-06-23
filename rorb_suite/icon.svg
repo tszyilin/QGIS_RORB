@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Background -->
+  <rect width="128" height="128" rx="22" ry="22" fill="#1a4f7a"/>
+  <!-- Inner border ring -->
+  <rect x="4" y="4" width="120" height="120" rx="19" ry="19"
+        fill="none" stroke="#2e7bb5" stroke-width="3" opacity="0.55"/>
+
+  <!--
+    Bold R as a single compound path (fill-rule evenodd punches the bowl counter).
+
+    Outer silhouette (clockwise):
+      stem full height | bowl outer curve | leg diagonal
+
+    Inner counter (clockwise, punched out by evenodd):
+      inner oval of the bowl
+  -->
+  <path fill="white" fill-rule="evenodd" d="
+    M 22,18
+    L 68,18
+    C 106,18 106,60 84,66
+    L 100,110
+    L 76,110
+    L 58,72
+    L 42,72
+    L 42,110
+    L 22,110
+    Z
+
+    M 42,32
+    L 64,32
+    C 86,32 86,56 64,56
+    L 42,56
+    Z
+  "/>
+
+  <!-- Water-wave accent at bottom -->
+  <path d="M 16,114 Q 30,106 44,114 Q 58,122 72,114 Q 86,106 100,114"
+        fill="none" stroke="#5bb8f5" stroke-width="3"
+        stroke-linecap="round" opacity="0.75"/>
+</svg>

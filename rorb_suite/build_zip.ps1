@@ -14,6 +14,7 @@ New-Item -ItemType Directory -Path (Join-Path $tmpDir "rorb_suite") | Out-Null
 Copy-Item "$baseDir\__init__.py"   "$tmpDir\rorb_suite\"
 Copy-Item "$baseDir\metadata.txt"  "$tmpDir\rorb_suite\"
 Copy-Item "$baseDir\plugin.py"     "$tmpDir\rorb_suite\"
+Copy-Item "$baseDir\icon.svg"      "$tmpDir\rorb_suite\"
 
 # Copy sub-packages
 Copy-Item -Recurse "$baseDir\rorb_catg" "$tmpDir\rorb_suite\rorb_catg"
