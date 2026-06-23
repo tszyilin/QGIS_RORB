@@ -1,10 +1,12 @@
 # Rebuild rorb_qgis.zip with the correct top-level directory structure
 # QGIS requires: rorb_qgis/<files> inside the zip
+# Output goes to the repo root so plugins.xml download_url works
 
-$baseDir = $PSScriptRoot
-$srcDir = Join-Path $baseDir "rorb_qgis"
-$zipPath = Join-Path $baseDir "rorb_qgis.zip"
-$tmpDir = Join-Path $env:TEMP "rorb_qgis_build"
+$baseDir  = $PSScriptRoot
+$repoRoot = Split-Path $baseDir -Parent
+$srcDir   = Join-Path $baseDir "rorb_qgis"
+$zipPath  = Join-Path $repoRoot "rorb_qgis.zip"
+$tmpDir   = Join-Path $env:TEMP "rorb_qgis_build"
 
 if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
 New-Item -ItemType Directory -Path $tmpDir | Out-Null

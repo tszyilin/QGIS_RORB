@@ -3,6 +3,7 @@
 [general]
 name=QGIS RORB
 qgisMinimumVersion=3.22
+qgisMaximumVersion=4.99
 description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
 version=1.0
 author=Tom Norman

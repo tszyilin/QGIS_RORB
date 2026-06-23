@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+
+  <!-- Plugin 1: RORB Catchment Tools — prepare layers & build .catg/.cat -->
+  <pyqgis_plugin name="QGIS RORB" version="1.0">
+    <description>Prepare GIS layers and build RORB/URBS control vectors from a catchment.</description>
+    <about>RORB Catchment Tools: preparation tools (auto-name subcatchments, centroids, confluences, reaches; check/clean links) and build tools (RORB .cat, URBS .vec+.cat). Requires pyromb>=0.3 for build tools.</about>
+    <version>1.0</version>
+    <qgis_minimum_version>3.22</qgis_minimum_version>
+    <qgis_maximum_version>4.99</qgis_maximum_version>
+    <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
+    <file_name>rorb_catg.zip</file_name>
+    <icon></icon>
+    <author_name>Tom Norman</author_name>
+    <download_url>https://raw.githubusercontent.com/tszyilin/QGIS_RORB/main/rorb_catg.zip</download_url>
+    <uploaded_by>tszyilin</uploaded_by>
+    <create_date>2026-06-23</create_date>
+    <update_date>2026-06-23</update_date>
+    <experimental>False</experimental>
+    <deprecated>False</deprecated>
+    <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
+    <repository>https://github.com/tszyilin/QGIS_RORB</repository>
+    <tags>runoff,hydrology,stormwater,rorb,urbs,catchment</tags>
+    <downloads>0</downloads>
+    <average_vote>0</average_vote>
+    <rating_votes>0</rating_votes>
+  </pyqgis_plugin>
+
+  <!-- Plugin 2: RORB QGIS Results Viewer — browse .out files, plot hydrographs -->
+  <pyqgis_plugin name="RORB QGIS" version="2.4">
+    <description>View RORB results: browse .out files, plot hydrographs, export critical events.</description>
+    <about>v2.4: Unified QGIS 3.x/4.x compatibility — PyQt5 and PyQt6 support via compat shim; matplotlib backend auto-selects Qt5/Qt6; fixes Compare tab crash. v2.37: Fix AEP label for EY events; correct EY sort order. v2.36: Fix hydrograph viewer crash. v2.35: Results viewer opens as floating window by default. v2.34: Remove rainfall from hydrograph viewer. v2.33: Rainfall overlay; dockable results viewer. v2.30: Persist scenarios; rename scenario.</about>
+    <version>2.4</version>
+    <qgis_minimum_version>3.0</qgis_minimum_version>
+    <qgis_maximum_version>4.99</qgis_maximum_version>
+    <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
+    <file_name>rorb_qgis.zip</file_name>
+    <icon></icon>
+    <author_name>Safin</author_name>
+    <download_url>https://raw.githubusercontent.com/tszyilin/QGIS_RORB/main/rorb_qgis.zip</download_url>
+    <uploaded_by>tszyilin</uploaded_by>
+    <create_date>2026-06-10</create_date>
+    <update_date>2026-06-23</update_date>
+    <experimental>False</experimental>
+    <deprecated>False</deprecated>
+    <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
+    <repository>https://github.com/tszyilin/QGIS_RORB</repository>
+    <tags>rorb,hydrology,routing,flood,rainfall,runoff</tags>
+    <downloads>0</downloads>
+    <average_vote>0</average_vote>
+    <rating_votes>0</rating_votes>
+  </pyqgis_plugin>
+
+</plugins>
