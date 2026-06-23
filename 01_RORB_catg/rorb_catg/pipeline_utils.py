@@ -1,0 +1,501 @@
+# -*- coding: utf-8 -*-
+"""
+Core pipeline functions: name layers and save as shapefiles.
+Each function takes raw QgsVectorLayer(s) and an output path,
+writes a new shapefile, and returns the loaded QgsVectorLayer.
+"""
+
+__author__ = 'Tom Norman'
+__date__ = '2023-06-15'
+__copyright__ = '(C) 2025 by Tom Norman'
+
+import os
+import string
+from collections import defaultdict
+
+from qgis.core import (
+    QgsVectorLayer,
+    QgsVectorFileWriter,
+    QgsFields,
+    QgsField,
+    QgsFeature,
+    QgsSpatialIndex,
+    QgsGeometry,
+    QgsPointXY,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsProject,
+)
+from .compat import INT, DOUBLE, STRING, make_shapefile_writer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _id_to_uppercase(subcatchment_id):
+    """1→A, 2→B, …, 26→Z, 27→AA, …"""
+    try:
+        index = int(subcatchment_id) - 1
+        letters = string.ascii_uppercase
+        base = len(letters)
+        if index < base:
+            return letters[index]
+        result = ''
+        while index >= 0:
+            result = letters[index % base] + result
+            index = index // base - 1
+        return result
+    except (ValueError, TypeError):
+        return None
+
+
+def _generate_lowercase_ids(n):
+    """a, b, …, z, aa, ab, …"""
+    letters = string.ascii_lowercase
+    base = len(letters)
+    ids = []
+    for i in range(n):
+        k, result = i, ''
+        while True:
+            result = letters[k % base] + result
+            k = k // base - 1
+            if k < 0:
+                break
+        ids.append(result)
+    return ids
+
+
+def _build_output_fields(in_fields, replacements):
+    """
+    Build QgsFields from in_fields, dropping any field whose name is in
+    replacements, then appending the replacement fields in order.
+    """
+    out = QgsFields()
+    drop = {name for name, _ in replacements}
+    for f in in_fields:
+        if f.name() not in drop:
+            out.append(f)
+    for name, qtype in replacements:
+        out.append(QgsField(name, qtype))
+    return out
+
+
+SHAPEFILE_EXTS = ('.shp', '.dbf', '.shx', '.prj', '.cpg', '.qpj', '.idx', '.sbn', '.sbx')
+
+def _delete_shapefile_if_exists(path):
+    """Remove all sidecar files for an existing shapefile."""
+    base = os.path.splitext(path)[0]
+    for ext in SHAPEFILE_EXTS:
+        candidate = base + ext
+        if os.path.exists(candidate):
+            os.remove(candidate)
+
+
+def _write_shapefile(features, fields, wkb_type, crs, output_path):
+    """Overwrite any existing shapefile and return the loaded layer."""
+    _delete_shapefile_if_exists(output_path)
+    writer = make_shapefile_writer(output_path, fields, wkb_type, crs)
+    if writer.hasError() != QgsVectorFileWriter.NoError:
+        raise RuntimeError(f'Could not create shapefile: {writer.errorMessage()}')
+    for feat in features:
+        writer.addFeature(feat)
+    del writer  # flush & close
+
+    layer = QgsVectorLayer(output_path, os.path.splitext(os.path.basename(output_path))[0], 'ogr')
+    if not layer.isValid():
+        raise RuntimeError(f'Saved shapefile is not a valid layer: {output_path}')
+    return layer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1: Name subcatchments south → north
+# ─────────────────────────────────────────────────────────────────────────────
+
+def name_subcatchments(source_layer, output_path):
+    """
+    Number polygon subcatchments 1, 2, 3, … from south to north.
+    Saves to output_path (.shp). Returns the loaded QgsVectorLayer.
+    """
+    in_fields = source_layer.fields()
+    out_fields = _build_output_fields(in_fields, [('id', INT)])
+    drop = {'id'}
+
+    crs = source_layer.crs()
+    # Project to get accurate centroid y even for geographic CRS
+    if crs.isGeographic():
+        proj_crs = QgsCoordinateReferenceSystem('EPSG:3857')
+        transform = QgsCoordinateTransform(crs, proj_crs, QgsProject.instance())
+    else:
+        transform = None
+
+    rows = []
+    for feat in source_layer.getFeatures():
+        geom = feat.geometry()
+        if transform:
+            g2 = QgsGeometry(geom)
+            g2.transform(transform)
+            y = g2.centroid().asPoint().y()
+        else:
+            y = geom.centroid().asPoint().y()
+        rows.append((y, feat))
+
+    rows.sort(key=lambda r: r[0])  # ascending y = south → north
+
+    out_feats = []
+    for i, (_, feat) in enumerate(rows):
+        f = QgsFeature(out_fields)
+        f.setGeometry(feat.geometry())
+        attrs = [feat[fld.name()] for fld in in_fields if fld.name() not in drop]
+        attrs.append(i + 1)
+        f.setAttributes(attrs)
+        out_feats.append(f)
+
+    return _write_shapefile(out_feats, out_fields, source_layer.wkbType(), crs, output_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2: Name centroids by spatial join to named subcatchments
+# ─────────────────────────────────────────────────────────────────────────────
+
+def name_centroids(named_subs_layer, cent_layer, output_path):
+    """
+    Assign letter IDs (A, B, …) to centroid points via a spatial join to the
+    numbered subcatchment polygons. Adds/updates 'id' (str) and 'fi' (float).
+    Saves to output_path (.shp). Returns the loaded QgsVectorLayer.
+    """
+    in_fields = cent_layer.fields()
+    out_fields = _build_output_fields(
+        in_fields, [('id', STRING), ('fi', DOUBLE)]
+    )
+    drop = {'id', 'fi'}
+
+    cent_crs = cent_layer.crs()
+    sub_crs  = named_subs_layer.crs()
+    sub_transform = (QgsCoordinateTransform(sub_crs, cent_crs, QgsProject.instance())
+                     if sub_crs != cent_crs else None)
+
+    # Build spatial index over subcatchments (in centroid CRS)
+    sub_index = QgsSpatialIndex()
+    sub_dict  = {}
+    for sub_feat in named_subs_layer.getFeatures():
+        geom = sub_feat.geometry()
+        if sub_transform:
+            geom.transform(sub_transform)
+        f = QgsFeature(sub_feat.id())
+        f.setGeometry(geom)
+        sub_index.insertFeature(f)
+        sub_dict[sub_feat.id()] = (geom, sub_feat['id'])  # (geom, numeric_id)
+
+    out_feats = []
+    for cent_feat in cent_layer.getFeatures():
+        pt = cent_feat.geometry()
+        candidates = sub_index.intersects(pt.boundingBox())
+        matched_numeric_id = None
+        for fid in candidates:
+            sub_geom, sub_num_id = sub_dict[fid]
+            if sub_geom.contains(pt):
+                matched_numeric_id = sub_num_id
+                break
+
+        letter = _id_to_uppercase(matched_numeric_id) if matched_numeric_id is not None else ''
+
+        fi_val = 0.0
+        if 'fi' in [fld.name() for fld in in_fields]:
+            try:
+                fi_val = float(cent_feat['fi']) if cent_feat['fi'] is not None else 0.0
+            except (ValueError, TypeError):
+                fi_val = 0.0
+
+        f = QgsFeature(out_fields)
+        f.setGeometry(cent_feat.geometry())
+        attrs = [cent_feat[fld.name()] for fld in in_fields if fld.name() not in drop]
+        attrs.append(str(letter))
+        attrs.append(fi_val)
+        f.setAttributes(attrs)
+        out_feats.append(f)
+
+    return _write_shapefile(out_feats, out_fields, cent_layer.wkbType(), cent_crs, output_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3: Name confluences south → north
+# ─────────────────────────────────────────────────────────────────────────────
+
+def name_confluences(source_layer, output_path):
+    """
+    Assign lowercase letter IDs (a, b, …) to confluence points from south to north.
+    Adds/updates 'id' (str) and 'out' (int). Saves to output_path (.shp).
+    Returns the loaded QgsVectorLayer.
+    """
+    in_fields = source_layer.fields()
+    out_fields = _build_output_fields(
+        in_fields, [('id', STRING), ('out', INT)]
+    )
+    drop = {'id', 'out'}
+
+    crs = source_layer.crs()
+    if crs.isGeographic():
+        proj_crs = QgsCoordinateReferenceSystem('EPSG:28351')
+        transform = QgsCoordinateTransform(crs, proj_crs, QgsProject.instance())
+    else:
+        transform = None
+
+    rows = []
+    for feat in source_layer.getFeatures():
+        geom = feat.geometry()
+        if transform:
+            g2 = QgsGeometry(geom)
+            g2.transform(transform)
+            y = g2.asPoint().y()
+        else:
+            y = geom.asPoint().y()
+        rows.append((y, feat))
+
+    rows.sort(key=lambda r: r[0])
+    id_list = _generate_lowercase_ids(len(rows))
+
+    out_feats = []
+    for i, (_, feat) in enumerate(rows):
+        out_val = 0
+        if 'out' in [fld.name() for fld in in_fields]:
+            try:
+                out_val = int(feat['out']) if feat['out'] is not None else 0
+            except (ValueError, TypeError):
+                out_val = 0
+
+        f = QgsFeature(out_fields)
+        f.setGeometry(feat.geometry())
+        attrs = [feat[fld.name()] for fld in in_fields if fld.name() not in drop]
+        attrs.append(id_list[i])
+        attrs.append(out_val)
+        f.setAttributes(attrs)
+        out_feats.append(f)
+
+    return _write_shapefile(out_feats, out_fields, source_layer.wkbType(), crs, output_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4: Name reaches by fromNode_toNode
+# ─────────────────────────────────────────────────────────────────────────────
+
+SNAP_RADIUS = 50.0  # map units
+
+
+def name_reaches(named_cents_layer, named_confs_layer, reach_layer, output_path,
+                 search_radius=SNAP_RADIUS):
+    """
+    Assign id = 'fromNode_toNode' to each reach by snapping endpoints to the
+    nearest centroid or confluence node. Ensures 't' (int) and 's' (float) fields.
+    Saves to output_path (.shp). Returns the loaded QgsVectorLayer.
+    """
+    in_fields = reach_layer.fields()
+    out_fields = _build_output_fields(
+        in_fields,
+        [('t', INT), ('s', DOUBLE), ('id', STRING)]
+    )
+    drop = {'t', 's', 'id'}
+
+    reach_crs = reach_layer.crs()
+
+    # Load all nodes in reach CRS
+    nodes = []  # [(id_str, QgsGeometry)]
+
+    def _load(layer):
+        t = (QgsCoordinateTransform(layer.crs(), reach_crs, QgsProject.instance())
+             if layer.crs() != reach_crs else None)
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            if t:
+                geom.transform(t)
+            nodes.append((str(feat['id']), geom))
+
+    _load(named_cents_layer)
+    _load(named_confs_layer)
+
+    node_idx = QgsSpatialIndex()
+    for i, (nid, geom) in enumerate(nodes):
+        f = QgsFeature()
+        f.setId(i)
+        f.setGeometry(geom)
+        node_idx.insertFeature(f)
+
+    def _nearest(pt_geom):
+        buf = pt_geom.buffer(search_radius, 5)
+        best_id, best_dist = None, float('inf')
+        for fid in node_idx.intersects(buf.boundingBox()):
+            nid, ngeom = nodes[fid]
+            if ngeom.intersects(buf):
+                d = ngeom.distance(pt_geom)
+                if d < best_dist:
+                    best_dist, best_id = d, nid
+        return best_id
+
+    out_feats = []
+    unnamed = []
+
+    for feat in reach_layer.getFeatures():
+        geom = feat.geometry()
+        reach_id = ''
+
+        if not geom.isEmpty():
+            polyline = (geom.asMultiPolyline()[0] if geom.isMultipart()
+                        else geom.asPolyline())
+            if polyline and len(polyline) >= 2:
+                from_id = _nearest(QgsGeometry.fromPointXY(QgsPointXY(polyline[0])))
+                to_id   = _nearest(QgsGeometry.fromPointXY(QgsPointXY(polyline[-1])))
+                if from_id and to_id:
+                    reach_id = f'{from_id}_{to_id}'
+                else:
+                    unnamed.append(feat.id())
+
+        t_val = 1
+        if 't' in [fld.name() for fld in in_fields]:
+            try:
+                t_val = int(feat['t']) if feat['t'] is not None else 1
+            except (ValueError, TypeError):
+                t_val = 1
+
+        s_val = 0.0
+        if 's' in [fld.name() for fld in in_fields]:
+            try:
+                s_val = float(feat['s']) if feat['s'] is not None else 0.0
+            except (ValueError, TypeError):
+                s_val = 0.0
+
+        f = QgsFeature(out_fields)
+        f.setGeometry(feat.geometry())
+        attrs = [feat[fld.name()] for fld in in_fields if fld.name() not in drop]
+        attrs += [t_val, s_val, reach_id]
+        f.setAttributes(attrs)
+        out_feats.append(f)
+
+    result_layer = _write_shapefile(out_feats, out_fields, reach_layer.wkbType(),
+                                    reach_crs, output_path)
+    return result_layer, unnamed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 5: Check link topology (returns structured results)
+# ─────────────────────────────────────────────────────────────────────────────
+
+CHECK_SNAP = 0.5  # map units
+
+
+def run_checks(reach_layer, cent_layer, conf_layer):
+    """
+    Returns a list of (status, message) where status ∈ {'pass', 'fail', 'warn'}.
+    """
+    results = []
+
+    def _check_fields(layer, required, label):
+        names = [f.name() for f in layer.fields()]
+        missing = [r for r in required if r not in names]
+        if missing:
+            results.append(('fail', f"{label}: missing field(s): {', '.join(missing)}"))
+            return False
+        results.append(('pass', f"{label}: required fields present ({', '.join(required)})"))
+        return True
+
+    ok = all([
+        _check_fields(cent_layer,  ['id'],            'Centroids'),
+        _check_fields(conf_layer,  ['id'],            'Confluences'),
+        _check_fields(reach_layer, ['id', 't', 's'], 'Reaches'),
+    ])
+    if not ok:
+        results.append(('warn', 'Skipping topology checks — fix missing fields first.'))
+        return results
+
+    reach_crs = reach_layer.crs()
+    nodes = []
+
+    def _load(layer):
+        t = (QgsCoordinateTransform(layer.crs(), reach_crs, QgsProject.instance())
+             if layer.crs() != reach_crs else None)
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            if t:
+                geom.transform(t)
+            nodes.append((str(feat['id']), geom))
+
+    _load(cent_layer)
+    n_cents = len(nodes)
+    _load(conf_layer)
+
+    idx = QgsSpatialIndex()
+    for i, (_, geom) in enumerate(nodes):
+        f = QgsFeature()
+        f.setId(i)
+        f.setGeometry(geom)
+        idx.insertFeature(f)
+
+    def _nearest(pt_geom):
+        buf = pt_geom.buffer(CHECK_SNAP, 5)
+        best_id, best_dist = None, float('inf')
+        for fid in idx.intersects(buf.boundingBox()):
+            nid, ngeom = nodes[fid]
+            if ngeom.intersects(buf):
+                d = ngeom.distance(pt_geom)
+                if d < best_dist:
+                    best_dist, best_id = d, nid
+        return best_id
+
+    mismatches = []
+    unmatched  = []
+    pt_line_map = defaultdict(list)
+
+    for feat in reach_layer.getFeatures():
+        geom   = feat.geometry()
+        lid    = str(feat['id']) if feat['id'] else ''
+        poly   = (geom.asMultiPolyline()[0] if geom.isMultipart() else geom.asPolyline()
+                  ) if not geom.isEmpty() else None
+
+        if not poly or len(poly) < 2:
+            unmatched.append(lid or '(no id)')
+            continue
+
+        from_id = _nearest(QgsGeometry.fromPointXY(QgsPointXY(poly[0])))
+        to_id   = _nearest(QgsGeometry.fromPointXY(QgsPointXY(poly[-1])))
+
+        if from_id is None or to_id is None:
+            unmatched.append(lid or '(no id)')
+            continue
+
+        expected = f'{from_id}_{to_id}'
+        pt_line_map[from_id].append(lid)
+        pt_line_map[to_id].append(lid)
+
+        if lid != expected:
+            mismatches.append((lid, expected))
+
+    if mismatches:
+        for found, expected in mismatches:
+            results.append(('fail', f'Reach "{found}": expected "{expected}"'))
+    else:
+        results.append(('pass', 'All reach IDs match their connected nodes'))
+
+    if unmatched:
+        results.append(('warn',
+            f'{len(unmatched)} reach(es) had no matching node endpoint: {unmatched}'))
+
+    isolated = [nid for nid, _ in nodes if not pt_line_map[nid]]
+    if isolated:
+        for nid in isolated:
+            results.append(('fail', f'Node "{nid}": not connected to any reach'))
+    else:
+        results.append(('pass', f'All {len(nodes)} node(s) connect to at least one reach'))
+
+    neg = []
+    for feat in reach_layer.getFeatures():
+        try:
+            if feat['s'] is not None and float(feat['s']) < 0:
+                neg.append(str(feat['id']))
+        except (ValueError, TypeError):
+            pass
+
+    if neg:
+        results.append(('warn', f'{len(neg)} reach(es) have negative slope: {neg}'))
+    else:
+        results.append(('pass', 'No negative slope values found'))
+
+    return results

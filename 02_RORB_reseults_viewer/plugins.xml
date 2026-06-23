@@ -1,0 +1,26 @@
+<?xml version = '1.0' encoding = 'UTF-8'?>
+<plugins>
+  <pyqgis_plugin name="RORB QGIS" version="2.4">
+    <description>View RORB results: browse .out files, plot hydrographs, export critical events</description>
+    <about>v2.4: Unified QGIS 3.x / 4.x compatibility — supports PyQt5 and PyQt6; matplotlib backend auto-selects between Qt5/Qt6; fixes Compare tab crash. v2.37: Fix AEP label for EY events; correct EY sort order. v2.36: Fix hydrograph viewer crash. v2.35: Results viewer opens as floating window by default. v2.34: Remove rainfall from hydrograph viewer. v2.33: Rainfall overlay; dockable results viewer. v2.32: Fix AttributeError on Compare tab. v2.30: Persist scenarios; rename scenario; remove Compare tab. v2.29: Rename plugin to RORB QGIS. v2.28: Zero-padded hydrographs; editable export names; .stm rainfall fallback.</about>
+    <version>2.4</version>
+    <qgis_minimum_version>3.0</qgis_minimum_version>
+    <qgis_maximum_version>4.99</qgis_maximum_version>
+    <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>
+    <file_name>rorb_qgis.zip</file_name>
+    <icon></icon>
+    <author_name>Safin</author_name>
+    <download_url>https://raw.githubusercontent.com/tszyilin/QGIS_RORB/main/rorb_qgis.zip</download_url>
+    <uploaded_by>tszyilin</uploaded_by>
+    <create_date>2026-06-10</create_date>
+    <update_date>2026-06-23</update_date>
+    <experimental>False</experimental>
+    <deprecated>False</deprecated>
+    <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
+    <repository>https://github.com/tszyilin/QGIS_RORB</repository>
+    <tags>rorb,hydrology,routing,flood,rainfall,runoff</tags>
+    <downloads>0</downloads>
+    <average_vote>0</average_vote>
+    <rating_votes>0</rating_votes>
+  </pyqgis_plugin>
+</plugins>

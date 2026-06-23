@@ -1,0 +1,44 @@
+# This file contains metadata for your plugin.
+
+[general]
+name=QGIS RORB
+qgisMinimumVersion=3.22
+description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
+version=1.0
+author=Tom Norman
+email=tom@ncos.com.au
+
+about=RORB Catchment Tools: A combined plugin for preparing and building RORB and URBS
+    runoff model control vectors from catchment GIS layers.
+
+    Preparation tools:
+    - Auto-name subcatchment polygons south to north (numeric IDs)
+    - Auto-name centroid points south to north (letter IDs)
+    - Auto-name confluence points south to north (lowercase letter IDs)
+    - Auto-name reaches from connected node IDs
+    - Check RORB layer link consistency
+    - Clean up negative slope values in reach layers
+
+    Build tools:
+    - Build RORB control vector (.cat file)
+    - Build URBS control vector (.vec + .cat files)
+
+    Requires the pyromb>=0.3 library for the build tools. Please refer to the
+    homepage for installation instructions.
+
+tracker=https://github.com/norman-tom/pyromb/issues
+repository=https://github.com/norman-tom/runoff-model
+
+hasProcessingProvider=yes
+
+changelog=
+v1.0: Initial release - combined runoff_model and rorb_specific tools.
+
+tags=runoff,hydrology,stormwater,rorb,urbs,wbnm,catchment
+
+homepage=https://github.com/norman-tom/runoff-model
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+server=False
