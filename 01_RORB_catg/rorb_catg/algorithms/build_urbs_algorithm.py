@@ -12,7 +12,12 @@ from qgis.core import (QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFileDestination)
 from ..compat import TYPE_LINE, TYPE_POLYGON, TYPE_POINT
-import pyromb
+try:
+    import pyromb
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'vendor')))
+    import pyromb
 from ..custom_types.qvector_layer import QVectorLayer
 
 

@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=1.11
+version=1.12
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,9 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v1.12: Fix ModuleNotFoundError for pyromb on initGui() — each file that uses
+    pyromb now has a self-contained fallback to the bundled vendor copy,
+    so the plugin loads even if pyromb is not pip-installed.
 v1.11: Remove "Run RORB" button — suite now contains only the catchment tools
     and results viewer (3 icons).
 v1.1: Add "Run RORB" toolbar icon and bundle pyromb.

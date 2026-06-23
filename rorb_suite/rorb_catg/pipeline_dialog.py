@@ -25,20 +25,27 @@ from .pipeline_utils import (
     name_reaches, run_checks,
 )
 from .custom_types.qvector_layer import QVectorLayer
-import pyromb
+try:
+    import pyromb
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
+    import pyromb
 
 
 class RorbPipelineDialog(QDialog):
 
-    def __init__(self, iface, parent=None):
+    def __init__(self, iface, parent=None, on_open_results=None):
         super().__init__(parent)
         self.iface = iface
+        self._on_open_results = on_open_results
         self._named_cents   = None
         self._named_confs   = None
         self._named_reaches = None
         self._named_basins  = None
         self._check_results = []
         self._tmp_dir       = None   # kept alive while dialog is open
+        self._run_dialog    = None   # kept alive while a Run RORB dialog is open
         self._setup_ui()
 
     def closeEvent(self, event):
@@ -151,6 +158,13 @@ class RorbPipelineDialog(QDialog):
         self.btn_build_catg.setEnabled(False)
         self.btn_build_catg.clicked.connect(lambda: self._on_build('.catg'))
         build_row.addWidget(self.btn_build_catg)
+
+        self.btn_run_rorb = QPushButton('Run RORB →')
+        self.btn_run_rorb.setFixedHeight(36)
+        self.btn_run_rorb.setEnabled(False)
+        self.btn_run_rorb.setToolTip('Run RORB_CMD.exe against the built .catg file')
+        self.btn_run_rorb.clicked.connect(self._on_run_rorb)
+        build_row.addWidget(self.btn_run_rorb)
         vlay4.addLayout(build_row)
         root.addWidget(grp4)
 
@@ -375,6 +389,8 @@ class RorbPipelineDialog(QDialog):
                       f'pyromb planar: <b>{total_area:.4f} km²</b> | '
                       f'QGIS ellipsoidal: <b>{total_qgis_km2:.4f} km²</b> '
                       f'({len(tb)} sub-catchments)')
+            if ext == '.catg':
+                self.btn_run_rorb.setEnabled(True)
             QMessageBox.information(self, 'Build complete',
                                     f'RORB control file written to:\n{output}\n\n'
                                     f'Total catchment area\n'
@@ -386,3 +402,17 @@ class RorbPipelineDialog(QDialog):
         finally:
             btn.setEnabled(True)
             btn.setText(f'Build {ext}')
+
+    # ── Run RORB hand-off ───────────────────────────────────────────────────────
+
+    def _on_run_rorb(self):
+        catg = self.txt_output_catg.text().strip()
+        if not catg or not os.path.isfile(catg):
+            QMessageBox.warning(self, 'No .catg file',
+                                'Build a .catg file before running RORB.')
+            return
+        from .run_rorb_dialog import RorbRunDialog
+        self._run_dialog = RorbRunDialog(
+            self.iface, self, catg_path=catg,
+            on_open_results=self._on_open_results)
+        self._run_dialog.show()
