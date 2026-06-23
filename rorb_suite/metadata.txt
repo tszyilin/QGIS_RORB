@@ -1,0 +1,31 @@
+[general]
+name=RORB Tools
+qgisMinimumVersion=3.22
+qgisMaximumVersion=4.99
+description=RORB catchment preparation, control vector builder, and results viewer.
+version=1.0
+author=Tom Norman / Safin
+email=tszyilin@gmail.com
+
+about=A combined RORB toolbox with three toolbar icons:
+    1. Create RORB Layers — create centroid, confluence and reach layer templates
+    2. Build RORB .catg — auto-name layers, check links, build RORB/URBS control vectors
+    3. RORB Results Viewer — browse .out files, plot hydrographs, export critical events
+
+    Requires pyromb>=0.3 for the build tools.
+
+tracker=https://github.com/tszyilin/QGIS_RORB/issues
+repository=https://github.com/tszyilin/QGIS_RORB
+homepage=https://github.com/tszyilin/QGIS_RORB
+
+hasProcessingProvider=yes
+
+changelog=
+v1.0: Initial combined release — RORB Catchment Tools + RORB Results Viewer in one toolbar.
+
+tags=rorb,hydrology,stormwater,urbs,catchment,routing,flood,runoff
+category=Vector
+icon=rorb_catg/icon.png
+experimental=False
+deprecated=False
+server=False
