@@ -70,7 +70,8 @@ class RorbSuitePlugin:
 
     def _show_pipeline(self):
         from .rorb_catg.pipeline_dialog import RorbPipelineDialog
-        dlg = RorbPipelineDialog(self.iface, self.iface.mainWindow())
+        dlg = RorbPipelineDialog(self.iface, self.iface.mainWindow(),
+                                 on_open_results=self._open_results_folder)
         dlg.show()
 
     def _show_viewer(self):
@@ -82,6 +83,11 @@ class RorbSuitePlugin:
             self._results_dialog.setFloating(True)
         self._results_dialog.show()
         self._results_dialog.raise_()
+
+    def _open_results_folder(self, folder):
+        self._show_viewer()
+        name = os.path.basename(os.path.normpath(folder)) or 'RORB run'
+        self._results_dialog.add_scenario(name, folder)
 
     def unload(self):
         if self.provider:

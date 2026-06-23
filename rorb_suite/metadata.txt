@@ -3,19 +3,16 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=1.1
+version=1.11
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
-about=A combined RORB toolbox with four toolbar icons:
+about=A combined RORB toolbox with three toolbar icons:
     1. Create RORB Layers — create centroid, confluence and reach layer templates
     2. Build RORB .catg — auto-name layers, check links, build RORB/URBS control vectors
-    3. Run RORB — run RORB_CMD.exe against a .catg/.stm pair with per-area kc/m/IL/CL
-    4. RORB Results Viewer — browse .out files, plot hydrographs, export critical events
+    3. RORB Results Viewer — browse .out files, plot hydrographs, export critical events
 
     Bundles pyromb>=0.3 for the build tools — no separate install needed.
-    Running RORB requires a separately licensed RORBwin installation
-    (RORB_CMD.exe).
 
 tracker=https://github.com/tszyilin/QGIS_RORB/issues
 repository=https://github.com/tszyilin/QGIS_RORB
@@ -24,10 +21,9 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
-v1.1: Add "Run RORB" toolbar icon — runs RORB_CMD.exe directly from QGIS and
-    loads the resulting .out file into the Results Viewer. Bundle pyromb —
-    fixes "No module named 'pyromb'" on initGui(); no manual pip install
-    needed anymore.
+v1.11: Remove "Run RORB" button — suite now contains only the catchment tools
+    and results viewer (3 icons).
+v1.1: Add "Run RORB" toolbar icon and bundle pyromb.
 v1.0: Initial combined release — RORB Catchment Tools + RORB Results Viewer in one toolbar.
 
 tags=rorb,hydrology,stormwater,urbs,catchment,routing,flood,runoff
