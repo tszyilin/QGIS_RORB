@@ -206,6 +206,10 @@ class RorbResultsDialog(QDockWidget):
         self._cmp_scenario_rows = []
         self._build_ui()
         self._restore_state()
+        from qgis.core import QgsProject
+        proj = QgsProject.instance()
+        proj.cleared.connect(self._clear_all_scenarios)
+        proj.readProject.connect(self._clear_all_scenarios)
 
     # ── UI ───────────────────────────────────────────────────────────────────
 
@@ -223,15 +227,18 @@ class RorbResultsDialog(QDockWidget):
         add_btn = QPushButton("Add…");    add_btn.setFixedWidth(60)
         ren_btn = QPushButton("Rename…"); ren_btn.setFixedWidth(75)
         rem_btn = QPushButton("Remove");  rem_btn.setFixedWidth(70)
+        clr_btn = QPushButton("Clear");   clr_btn.setFixedWidth(60)
         add_btn.clicked.connect(self._add_scenario)
         ren_btn.clicked.connect(self._rename_scenario)
         rem_btn.clicked.connect(self._remove_scenario)
+        clr_btn.clicked.connect(self._clear_all_scenarios_prompt)
         self._scan_progress = QProgressBar(); self._scan_progress.setVisible(False)
         self._scan_progress.setMaximumWidth(200)
         self._scan_status = QLabel("")
         self._scan_status.setStyleSheet("color:gray;font-size:8pt;")
         sbar.addWidget(self._scen_combo)
         sbar.addWidget(add_btn); sbar.addWidget(ren_btn); sbar.addWidget(rem_btn)
+        sbar.addWidget(clr_btn)
         sbar.addWidget(self._scan_progress)
         sbar.addWidget(self._scan_status)
         sbar.addStretch()
@@ -1079,6 +1086,23 @@ class RorbResultsDialog(QDockWidget):
 
     # ── Scenario management ───────────────────────────────────────────────────
 
+    def add_scenario(self, name, folder):
+        """
+        Programmatic equivalent of _add_scenario() — used by the "Run RORB"
+        dialog to load a freshly-produced .out folder without showing the
+        Add Scenario prompt. Picks a free name if `name` is already taken.
+        """
+        if not folder or not os.path.isdir(folder):
+            return
+        base, candidate, n = name, name, 1
+        while candidate in self._scenarios:
+            n += 1
+            candidate = f'{base} ({n})'
+        self._scenarios[candidate] = {}
+        self._scen_combo.addItem(candidate)
+        self._scen_combo.setCurrentText(candidate)
+        self._scan_scenario(candidate, folder)
+
     def _add_scenario(self):
         dlg = _AddScenarioDialog(self)
         if dlg.exec() != DialogAccepted: return
@@ -1127,6 +1151,24 @@ class RorbResultsDialog(QDockWidget):
         self._scen_combo.removeItem(idx)
         self._refresh_all()
         self._save_state()
+
+    def _clear_all_scenarios(self):
+        self._scenarios.clear()
+        self._scenario_folders.clear()
+        self._active = None
+        self._scen_combo.blockSignals(True)
+        self._scen_combo.clear()
+        self._scen_combo.blockSignals(False)
+        self._refresh_all()
+        self._save_state()
+
+    def _clear_all_scenarios_prompt(self):
+        if not self._scenarios:
+            return
+        if QMessageBox.question(self, "Clear All", "Remove all scenarios?",
+                                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._clear_all_scenarios()
 
     def _scan_scenario(self, name, folder):
         self._scenario_folders[name] = folder

@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=1.12
+version=1.13
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
