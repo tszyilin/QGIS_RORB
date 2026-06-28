@@ -9,7 +9,7 @@ import shutil
 import tempfile
 
 from qgis.PyQt.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QMessageBox,
 )
 from qgis.PyQt.QtCore import Qt
@@ -33,19 +33,20 @@ except ImportError:
     import pyromb
 
 
-class RorbPipelineDialog(QDialog):
+class RorbPipelineDialog(QWidget):
 
-    def __init__(self, iface, parent=None, on_open_results=None):
+    def __init__(self, iface, parent=None, on_open_results=None, on_catg_built=None):
         super().__init__(parent)
         self.iface = iface
         self._on_open_results = on_open_results
+        self._on_catg_built   = on_catg_built   # called with catg_path when embedded in Run RORB tab
         self._named_cents   = None
         self._named_confs   = None
         self._named_reaches = None
         self._named_basins  = None
         self._check_results = []
-        self._tmp_dir       = None   # kept alive while dialog is open
-        self._run_dialog    = None   # kept alive while a Run RORB dialog is open
+        self._tmp_dir       = None
+        self._run_dialog    = None
         self._setup_ui()
 
     def closeEvent(self, event):
@@ -168,9 +169,10 @@ class RorbPipelineDialog(QDialog):
         vlay4.addLayout(build_row)
         root.addWidget(grp4)
 
-        btn_close = QPushButton('Close')
-        btn_close.clicked.connect(self.close)
-        root.addWidget(btn_close, alignment=ALIGN_RIGHT)
+        if not self._on_catg_built:
+            btn_close = QPushButton('Close')
+            btn_close.clicked.connect(self.close)
+            root.addWidget(btn_close, alignment=ALIGN_RIGHT)
 
     # ── Browse helpers ────────────────────────────────────────────────────────
 
@@ -256,7 +258,7 @@ class RorbPipelineDialog(QDialog):
         # ── 1. Name subcatchments ────────────────────────────────────────────
         self._log('info', 'Naming subcatchments south → north…')
         named_subs = name_subcatchments(sub, p('subs'))
-        QgsProject.instance().addMapLayer(named_subs, False)
+        QgsProject.instance().addMapLayer(named_subs, not use_temp)
         lbl = '(temporary)' if use_temp else p('subs')
         self._log('pass', f'Subcatchments named → {lbl}')
         self._named_basins = named_subs
@@ -264,7 +266,7 @@ class RorbPipelineDialog(QDialog):
         # ── 2. Name centroids ────────────────────────────────────────────────
         self._log('info', 'Naming centroids…')
         named_cents = name_centroids(named_subs, cent, p('centroids'))
-        QgsProject.instance().addMapLayer(named_cents, False)
+        QgsProject.instance().addMapLayer(named_cents, not use_temp)
         lbl = '(temporary)' if use_temp else p('centroids')
         self._log('pass', f'Centroids named → {lbl}')
         self._named_cents = named_cents
@@ -272,7 +274,7 @@ class RorbPipelineDialog(QDialog):
         # ── 3. Name confluences ──────────────────────────────────────────────
         self._log('info', 'Naming confluences south → north…')
         named_confs = name_confluences(conf, p('confluences'))
-        QgsProject.instance().addMapLayer(named_confs, False)
+        QgsProject.instance().addMapLayer(named_confs, not use_temp)
         lbl = '(temporary)' if use_temp else p('confluences')
         self._log('pass', f'Confluences named → {lbl}')
         self._named_confs = named_confs
@@ -280,7 +282,7 @@ class RorbPipelineDialog(QDialog):
         # ── 4. Name reaches ──────────────────────────────────────────────────
         self._log('info', 'Naming reaches…')
         named_reaches, unnamed = name_reaches(named_cents, named_confs, reach, p('reaches'))
-        QgsProject.instance().addMapLayer(named_reaches, False)
+        QgsProject.instance().addMapLayer(named_reaches, not use_temp)
         lbl = '(temporary)' if use_temp else p('reaches')
         self._log('pass', f'Reaches named → {lbl}')
         if unnamed:
@@ -410,6 +412,9 @@ class RorbPipelineDialog(QDialog):
         if not catg or not os.path.isfile(catg):
             QMessageBox.warning(self, 'No .catg file',
                                 'Build a .catg file before running RORB.')
+            return
+        if self._on_catg_built:
+            self._on_catg_built(catg)
             return
         from .run_rorb_dialog import RorbRunDialog
         self._run_dialog = RorbRunDialog(

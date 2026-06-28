@@ -258,6 +258,10 @@ def parse_out(path):
         nm = re.search(r'\*\*\* Calculated hydrograph,\s+(.+)', line)
         if nm:
             node = nm.group(1).strip()
+        else:
+            nm2 = re.search(r'\*\*\* Calc\. hyd\. for ungauged interstation site at:\s+(.+)', line)
+            if nm2:
+                node = nm2.group(1).strip()
         if node and 'Peak discharge' in line:
             nums = re.findall(r'[\d.]+', line)
             if nums:
@@ -265,6 +269,40 @@ def parse_out(path):
             node = None
 
     return kc, m, il, cl, dt, rain_ts, kr_list, peaks, total_depth
+
+
+def parse_out_ttp(path):
+    """
+    Parse RORB's own 'Time to peak,h' from each node's summary block.
+
+    Handles both regular print nodes (*** Calculated hydrograph,) and
+    ungauged interstation / dummy-print nodes
+    (*** Calc. hyd. for ungauged interstation site at:).
+
+    Returns {node_name: time_to_peak_hr}.  Empty dict on failure.
+    """
+    result = {}
+    node = None
+    try:
+        with open(path, encoding='latin-1', errors='replace') as f:
+            for line in f:
+                nm = re.search(r'\*\*\* Calculated hydrograph,\s+(.+)', line)
+                if nm:
+                    node = nm.group(1).strip()
+                    continue
+                nm2 = re.search(
+                    r'\*\*\* Calc\. hyd\. for ungauged interstation site at:\s+(.+)', line)
+                if nm2:
+                    node = nm2.group(1).strip()
+                    continue
+                if node and 'Time to peak' in line:
+                    nums = re.findall(r'[\d.]+(?:[Ee][+-]?\d+)?', line)
+                    if nums:
+                        result[node] = float(nums[-1])
+                    node = None
+    except OSError:
+        pass
+    return result
 
 
 def parse_stm(path):
@@ -357,44 +395,41 @@ def parse_out_rainfall(path):
 
 def _parse_site_names(lines):
     """
-    Parse the 'Site  Description' table in a RORB .out file.
+    Parse the 'Code no. ... read as NAME' block in a RORB .out file.
 
-    Handles multiple RORB description formats, e.g.:
-      01  Calculated hydrograph, Western_Outlet
-      02  Calc. hyd. for ungauged interstation site at: node_21
+    These lines appear under 'Catchment name & reach type flag / Control vector
+    & storage data' and list every print node (code 7.x) in the same order as
+    the Hyd0001, Hyd0002, ... columns in the hydrograph table.
 
-    Strategy: for each site row, take everything after the last ',' or ':'
-    as the node name.
+    Example lines:
+      Code no.  13     7.2 Ungauged interstation area location read as node_21
+      Code no.  31     7.0 Location read as Western_Outlet
 
     Returns dict mapping 'Hyd0001' → 'Western_Outlet', etc.
-    Falls back to Hyd000x when no name can be extracted.
+    Falls back to empty dict (raw Hyd000x names) when none are found.
     """
-    mapping = {}
-    in_table = False
+    names = []
+    in_block = False
     for line in lines:
-        if re.match(r'\s*Site\s+Description', line):
-            in_table = True
+        if re.search(r'Control vector & storage data', line):
+            in_block = True
             continue
-        if not in_table:
+        if not in_block:
             continue
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Each site row starts with a numeric site number
-        m = re.match(r'(\d+)\s+(.+)', stripped)
-        if not m:
-            if mapping:
+        m = re.match(r'\s*Code no\.\s+\d+\s+[\d.]+\s+.*?read as\s+(\S+)', line, re.IGNORECASE)
+        if m:
+            names.append(m.group(1).strip())
+        elif names:
+            # Stop at the first non-matching line after we've collected names
+            if line.strip() and not line.strip().startswith('Code no.'):
                 break
-            continue
-        site_num = int(m.group(1))
-        desc     = m.group(2).strip()
-        # Extract name: everything after the last ':' or ','
-        name_m = re.search(r'[,:]\s*(\S[^,:]*?)\s*$', desc)
-        if name_m:
-            name = name_m.group(1).strip()
-            if name:
-                mapping[f'Hyd{site_num:04d}'] = name
-    return mapping
+    # Build lookup keyed by both 4-digit (Hyd0001, RORB 6.52+) and
+    # 3-digit (Hyd001, RORB 6.44) column name formats.
+    result = {}
+    for i, name in enumerate(names):
+        result[f'Hyd{i+1:04d}'] = name   # 4-digit: Hyd0001
+        result[f'Hyd{i+1:03d}'] = name   # 3-digit: Hyd001
+    return result
 
 
 def parse_out_hydrograph(path):
@@ -448,7 +483,14 @@ def parse_out_hydrograph(path):
 
     nodes = {name: np.array(arr) for name, arr in zip(node_names, arrays)}
     dt    = (times[1] - times[0]) if len(times) >= 2 else None
-    return nodes, times, dt
+    # RORB 6.44 omits Inc 0, so the table starts at Inc 1 / Time dt.
+    # Shift back so the time axis starts at 0.0 (matches RORB 6.52 and summary values).
+    time_shifted = False
+    if times and dt is not None and times[0] != 0.0:
+        offset = times[0]
+        times = [t - offset for t in times]
+        time_shifted = True
+    return nodes, times, dt, time_shifted
 
 
 def parse_rorb_csv(path):

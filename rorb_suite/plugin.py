@@ -16,6 +16,7 @@ class RorbSuitePlugin:
         self.provider = None
         self.toolbar = None
         self._results_dialog = None
+        self._run_dialog = None
 
     def initProcessing(self):
         from .rorb_catg.rorb_catg_provider import RorbCatgProvider
@@ -43,14 +44,14 @@ class RorbSuitePlugin:
         action_create.triggered.connect(self._show_create_layers)
         self.toolbar.addAction(action_create)
 
-        # Button 2 — Build RORB .catg
+        # Button 2 — Build .catg & Run RORB
         action_catg = QAction(
             QIcon(os.path.join(_HERE, 'rorb_catg', 'icon_catg.svg')),
             'Build RORB .catg',
             self.iface.mainWindow(),
         )
-        action_catg.setToolTip('Name layers → check links → build .cat / .catg')
-        action_catg.triggered.connect(self._show_pipeline)
+        action_catg.setToolTip('Build .catg / run RORB ensemble')
+        action_catg.triggered.connect(self._show_run_rorb)
         self.toolbar.addAction(action_catg)
 
         # Button 3 — RORB Results Viewer
@@ -68,11 +69,16 @@ class RorbSuitePlugin:
         dlg = CreateLayersDialog(self.iface.mainWindow())
         dlg.show()
 
-    def _show_pipeline(self):
-        from .rorb_catg.pipeline_dialog import RorbPipelineDialog
-        dlg = RorbPipelineDialog(self.iface, self.iface.mainWindow(),
-                                 on_open_results=self._open_results_folder)
-        dlg.show()
+    def _show_run_rorb(self):
+        from .rorb_catg.run_rorb_dialog import RorbRunDialog
+        if self._run_dialog is None or not self._run_dialog.isVisible():
+            self._run_dialog = RorbRunDialog(
+                self.iface,
+                parent=self.iface.mainWindow(),
+                on_open_results=self._open_results_folder,
+            )
+        self._run_dialog.show()
+        self._run_dialog.raise_()
 
     def _show_viewer(self):
         from .rorb_qgis.results_dialog import RorbResultsDialog
@@ -96,6 +102,9 @@ class RorbSuitePlugin:
             self.toolbar.clear()
             self.iface.mainWindow().removeToolBar(self.toolbar)
             self.toolbar = None
+        if self._run_dialog:
+            self._run_dialog.deleteLater()
+            self._run_dialog = None
         if self._results_dialog:
             self.iface.removeDockWidget(self._results_dialog)
             self._results_dialog.deleteLater()

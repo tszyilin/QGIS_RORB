@@ -100,7 +100,7 @@ class _ScanWorker(QThread):
 
     def run(self):
         try:
-            from .core.engine import parse_out_hydrograph, parse_out_rainfall
+            from .core.engine import parse_out_hydrograph, parse_out_rainfall, parse_out_ttp
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             fnames = sorted(
@@ -114,9 +114,13 @@ class _ScanWorker(QThread):
                 path   = os.path.join(folder, fname)
                 parsed = _parse_filename(fname)
                 try:
-                    nodes, time_axis, dt = parse_out_hydrograph(path)
+                    nodes, time_axis, dt, time_shifted = parse_out_hydrograph(path)
                 except Exception:
-                    nodes, time_axis, dt = {}, [], None
+                    nodes, time_axis, dt, time_shifted = {}, [], None, False
+                try:
+                    ttp_map = parse_out_ttp(path)
+                except Exception:
+                    ttp_map = {}
                 try:
                     rain_t, rain_mm, _ = parse_out_rainfall(path)
                 except Exception:
@@ -133,19 +137,21 @@ class _ScanWorker(QThread):
                                 rain_mm = [0.0] + rain_stm + [0.0]
                         except Exception:
                             pass
-                return fname, path, parsed, nodes, time_axis, dt, rain_t, rain_mm
+                return fname, path, parsed, nodes, time_axis, dt, ttp_map, rain_t, rain_mm, time_shifted
 
             total = len(fnames); done = 0; out = {}
             with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as ex:
                 futures = {ex.submit(_parse_one, f): f for f in fnames}
                 for fut in futures:
-                    fname, path, parsed, nodes, time_axis, dt, rain_t, rain_mm = fut.result()
+                    fname, path, parsed, nodes, time_axis, dt, ttp_map, rain_t, rain_mm, time_shifted = fut.result()
                     done += 1
                     self.progress.emit(done, total, fname)
                     out[path] = {
                         'fname': fname, 'path': path, 'parsed': parsed,
                         'nodes': nodes, 'time': time_axis, 'dt': dt,
+                        'ttp_map': ttp_map,
                         'rain_t': rain_t, 'rain_mm': rain_mm,
+                        'time_shifted': time_shifted,
                     }
             self.result.emit(self.scenario_name, out)
         except Exception:
@@ -293,8 +299,15 @@ class RorbResultsDialog(QDockWidget):
                     tpi = QTableWidgetItem(str(tp)); tpi.setTextAlignment(AlignCenter)
                     self._file_table.setItem(row, 4, tpi)
                     ok = bool(e.get('nodes'))
-                    si2 = QTableWidgetItem("OK" if ok else "No hydrograph")
-                    si2.setForeground(QColor('#16a34a' if ok else '#dc2626'))
+                    if ok and e.get('time_shifted'):
+                        si2 = QTableWidgetItem("OK  (RORB <6.52 — time corrected)")
+                        si2.setForeground(QColor('#d97706'))
+                    elif ok:
+                        si2 = QTableWidgetItem("OK")
+                        si2.setForeground(QColor('#16a34a'))
+                    else:
+                        si2 = QTableWidgetItem("No hydrograph")
+                        si2.setForeground(QColor('#dc2626'))
                     self._file_table.setItem(row, 5, si2)
                 else:
                     for c, t in enumerate(["-", "-", "-", "Name not parsed"], 2):
@@ -357,8 +370,14 @@ class RorbResultsDialog(QDockWidget):
             t = rep_e.get('time', [])[:len(q)] if q is not None else []
             ttp = 0.0
             if q is not None and len(q):
-                pk_idx = int(np.argmax(q))
-                ttp = t[pk_idx] if pk_idx < len(t) else 0.0
+                ttp_map = rep_e.get('ttp_map', {})
+                if node and node in ttp_map:
+                    ttp = ttp_map[node]
+                elif ttp_map:
+                    ttp = list(ttp_map.values())[-1]
+                else:
+                    pk_idx = int(np.argmax(q))
+                    ttp = t[pk_idx] if pk_idx < len(t) else 0.0
             crit['ttp'] = ttp; crit['aep'] = aep; crit['node'] = node
             self._crit_rows.append(crit)
             row = self._crit_table.rowCount()
@@ -838,6 +857,13 @@ class RorbResultsDialog(QDockWidget):
         self._exp_preview_table.setAlternatingRowColors(True)
         self._exp_preview_table.itemChanged.connect(self._on_preview_name_changed)
         prev_lay.addWidget(self._exp_preview_table)
+        self._exp_version_warn = QLabel("")
+        self._exp_version_warn.setWordWrap(True)
+        self._exp_version_warn.setStyleSheet(
+            "color:#92400e;background:#fef3c7;padding:4px 6px;"
+            "border:1px solid #fcd34d;border-radius:3px;")
+        self._exp_version_warn.setVisible(False)
+        prev_lay.addWidget(self._exp_version_warn)
         splitter.addWidget(prev_w)
 
         splitter.setSizes([180, 130, 160])
@@ -991,7 +1017,10 @@ class RorbResultsDialog(QDockWidget):
     def _refresh_preview(self):
         self._exp_preview_table.blockSignals(True)
         self._exp_preview_table.setRowCount(0)
+        has_shifted = False
         for source, aep, dur_label, tp_num, entry in self._get_export_events():
+            if entry and entry.get('time_shifted'):
+                has_shifted = True
             default_stem = self._entry_stem(entry) if entry else "—"
             key  = (source, aep, dur_label, tp_num)
             name = self._custom_stems.get(key, default_stem)
@@ -1014,6 +1043,14 @@ class RorbResultsDialog(QDockWidget):
             name_it.setData(UserRole, (key, default_stem))
             self._exp_preview_table.setItem(row, 4, name_it)
         self._exp_preview_table.blockSignals(False)
+        if has_shifted:
+            self._exp_version_warn.setText(
+                "⚠ Warning: These results are from RORB <v6.52 — the time axis has been "
+                "corrected by one time step (varies by duration) so that it starts at 0.00 h. "
+                "RORB 6.52+ outputs are unaffected.")
+            self._exp_version_warn.setVisible(True)
+        else:
+            self._exp_version_warn.setVisible(False)
 
     def _on_preview_name_changed(self, item):
         if item.column() != 4:
@@ -1450,11 +1487,16 @@ class RorbResultsDialog(QDockWidget):
             self._ax.set_xlim(0, min(t_ref[-1] if t_ref else 100, pk_t*3+2))
 
         self._canvas.draw()
+        summary_lines = []
         if crit:
-            self._peak_summary.setText(
-                f"Critical: {crit['crit_dur']}\n"
-                f"Mean pk:  {crit['mean_peak']:.3f} m³/s\n"
-                f"Rep TP:   TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)")
+            summary_lines += [
+                f"Critical: {crit['crit_dur']}",
+                f"Mean pk:  {crit['mean_peak']:.3f} m³/s",
+                f"Rep TP:   TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)",
+            ]
+        if any(e.get('time_shifted') for e in entries):
+            summary_lines.append("⚠ RORB <v6.52 — time axis corrected")
+        self._peak_summary.setText("\n".join(summary_lines))
 
     # ── Export ────────────────────────────────────────────────────────────────
 
@@ -1467,6 +1509,7 @@ class RorbResultsDialog(QDockWidget):
         if not events:
             QMessageBox.warning(self, "Export", "No events selected."); return
         saved = []
+        adjusted = []
         for source, aep, dur_label, tp_num, entry in events:
             q = self._get_hydro(entry, node)
             t = list(entry.get('time', [])[:len(q)]) if q is not None else []
@@ -1487,8 +1530,19 @@ class RorbResultsDialog(QDockWidget):
                 for tv, qv in zip(t, q):
                     w.writerow([f"{tv:.4f}", f"{float(qv):.6f}"])
             saved.append(os.path.basename(fname))
-        QMessageBox.information(self, "Export Hydrographs",
-                                f"Exported {len(saved)} file(s) to:\n{folder}")
+            if entry.get('time_shifted'):
+                dt_val = entry.get('dt')
+                dt_str = f"{dt_val * 60:.4g} min" if dt_val else "?"
+                adjusted.append((os.path.basename(fname), dt_str))
+        msg = f"Exported {len(saved)} file(s) to:\n{folder}"
+        if adjusted:
+            file_lines = "\n".join(f"  {fn}  (step: {ds})" for fn, ds in adjusted)
+            msg += (
+                f"\n\nNote: {len(adjusted)} file(s) from RORB <v6.52 had their time axis "
+                f"shifted back by one time step so that time starts at 0.00 h "
+                f"(RORB <v6.52 omits the Inc 0 row):\n" + file_lines
+            )
+        QMessageBox.information(self, "Export Hydrographs", msg)
 
     def _export_hyetos(self):
         folder = self._exp_folder_edit.text().strip()

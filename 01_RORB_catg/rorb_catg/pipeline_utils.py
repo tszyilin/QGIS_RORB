@@ -443,6 +443,8 @@ def run_checks(reach_layer, cent_layer, conf_layer):
     mismatches = []
     unmatched  = []
     pt_line_map = defaultdict(list)
+    _from_ids = set()
+    _to_ids = set()
 
     for feat in reach_layer.getFeatures():
         geom   = feat.geometry()
@@ -464,6 +466,8 @@ def run_checks(reach_layer, cent_layer, conf_layer):
         expected = f'{from_id}_{to_id}'
         pt_line_map[from_id].append(lid)
         pt_line_map[to_id].append(lid)
+        _from_ids.add(from_id)
+        _to_ids.add(to_id)
 
         if lid != expected:
             mismatches.append((lid, expected))
@@ -497,5 +501,18 @@ def run_checks(reach_layer, cent_layer, conf_layer):
         results.append(('warn', f'{len(neg)} reach(es) have negative slope: {neg}'))
     else:
         results.append(('pass', 'No negative slope values found'))
+
+    # ── Outlet check ─────────────────────────────────────────────────────────
+    outlets = _to_ids - _from_ids
+    if len(outlets) == 1:
+        results.append(('pass', f'Single outlet node: "{next(iter(outlets))}"'))
+    elif len(outlets) == 0:
+        results.append(('fail',
+            'No outlet found — every node has an outgoing reach '
+            '(possible circular or disconnected network)'))
+    else:
+        results.append(('fail',
+            f'{len(outlets)} outlet nodes found — must be exactly 1: '
+            f'{sorted(outlets)}'))
 
     return results
