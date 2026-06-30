@@ -22,23 +22,48 @@ AEP_CLASS = {
     '5%':        'intermediate',  # 5% between 3.2% and 14.4% → intermediate
     '2%':        'rare',
     '1%':        'rare',
-    '1 in 200':  'rare',
-    '1 in 500':  'rare',
-    '1 in 1000': 'rare',
-    '1 in 2000': 'rare',
+    '1 in 200':  'very rare',
+    '1 in 500':  'very rare',
+    '1 in 1000': 'very rare',
+    '1 in 2000': 'very rare',
 }
+
+
+def _normalize_aep_label(aep):
+    """Normalise AEP label so CSV variants match the lookup tables.
+
+    '63.20%' → '63.2%', '50.00%' → '50%', '1 in 10000' unchanged.
+    """
+    aep = aep.strip()
+    if aep.endswith('%'):
+        try:
+            return f'{float(aep[:-1]):g}%'
+        except ValueError:
+            pass
+    return aep
 
 
 def aep_to_class(aep_label):
     """Return temporal pattern class ('frequent'/'intermediate'/'rare') or None."""
-    return AEP_CLASS.get(aep_label)
+    key = _normalize_aep_label(aep_label)
+    result = AEP_CLASS.get(key)
+    if result is not None:
+        return result
+    # Any '1 in X' with X > 2000 (extreme/PMP events) → very rare temporal patterns
+    if key.startswith('1 in '):
+        try:
+            if int(key[5:].replace(',', '').split()[0]) > 2000:
+                return 'very rare'
+        except (ValueError, IndexError):
+            pass
+    return None
 
 
 # Per-AEP tp number offset (matches RORBWin convention):
-#   frequent (>14.4%) / intermediate (3.2–14.4%) → tp1–10   (offset  0)
-#   intermediate 10%/5%                           → tp11–20  (offset 10)
-#   rare 2%/1%                                    → tp21–30  (offset 20)
-#   very rare 1-in-200 and beyond                 → tp31–40  (offset 30)
+#   frequent (>14.4%)                     → tp1–10   (offset  0)
+#   intermediate (3.2–14.4%: 10%, 5%)    → tp11–20  (offset 10)
+#   rare (2%, 1%)                         → tp21–30  (offset 20)
+#   very rare (1 in 200 and rarer)        → tp31–40  (offset 30)
 _AEP_TP_OFFSET = {
     '12EY': 0, '6EY': 0, '4EY': 0, '3EY': 0, '2EY': 0,
     '63.2%': 0, '50%': 0, '0.5EY': 0,
@@ -55,7 +80,19 @@ def tp_number(aep_label, position_1based):
     Offsets match RORBWin:  intermediate → tp1-10, 10%/5% → tp11-20,
     2%/1% → tp21-30, 1-in-200 and rarer → tp31-40.
     """
-    return _AEP_TP_OFFSET.get(aep_label, 0) + position_1based
+    key = _normalize_aep_label(aep_label)
+    offset = _AEP_TP_OFFSET.get(key)
+    if offset is None:
+        # Extreme '1 in X' events use the rare offset (30)
+        if key.startswith('1 in '):
+            try:
+                if int(key[5:].replace(',', '').split()[0]) > 2000:
+                    offset = 30
+            except (ValueError, IndexError):
+                pass
+        if offset is None:
+            offset = 0
+    return offset + position_1based
 
 
 def dur_label(dur_min):
@@ -166,7 +203,16 @@ _AEP_FRAC = {
 
 def aep_label_to_fraction(aep_label):
     """Return AEP as a fraction (e.g. '20%' → 0.20). Returns 0.10 if unknown."""
-    return _AEP_FRAC.get(aep_label, 0.10)
+    key = _normalize_aep_label(aep_label)
+    if key in _AEP_FRAC:
+        return _AEP_FRAC[key]
+    # Compute fraction from '1 in X' format
+    if key.startswith('1 in '):
+        try:
+            return 1.0 / int(key[5:].replace(',', '').split()[0])
+        except (ValueError, IndexError, ZeroDivisionError):
+            pass
+    return 0.10
 
 
 def _arf_short(area_km2, dur_min, aep_frac):

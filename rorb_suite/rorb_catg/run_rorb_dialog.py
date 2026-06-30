@@ -469,6 +469,9 @@ class _EnsembleWorker(QThread):
                                     _arr.aep_label_to_fraction(aep))
                 key = (dur_min, cls)
                 pats = sorted(patterns.get(key, []), key=lambda x: x[0])  # sort by EventID
+                # Some regional CSVs omit 'very rare' — fall back to 'rare' patterns
+                if not pats and cls == 'very rare':
+                    pats = sorted(patterns.get((dur_min, 'rare'), []), key=lambda x: x[0])
                 for pos, (event_id, ts_min, fracs) in enumerate(pats, 1):
                     tp_num = _arr.tp_number(aep, pos)
                     runs.append({
@@ -815,6 +818,9 @@ class RorbRunDialog(QDialog):
         self._staging_dir = None
         self._staging_inputs = set()
         self._original_output_dir = None
+
+        self._ifd_dur_mins = set()    # durations (int, minutes) present in IFD CSV
+        self._tp_dur_mins = set()     # durations (int, minutes) present in temporal patterns CSV
 
         self._run_mode = 'text'       # 'text' or 'plot'
         self._storm_mode = 'stm'      # 'stm' or 'arr2016'
@@ -1339,25 +1345,38 @@ class RorbRunDialog(QDialog):
         if not path or not os.path.isfile(path):
             return
         try:
-            _, aep_cols = _arr.load_depths(path)
+            depths, aep_cols = _arr.load_depths(path)
         except Exception:
             return
         if not aep_cols:
             return
+
+        # Store IFD durations so temporal changes can intersect with them
+        self._ifd_dur_mins = set(depths.keys())
+
+        # Filter to AEPs that have a valid temporal-class mapping
+        valid_aeps = [a for a in aep_cols if _arr.aep_to_class(a) is not None]
+        if not valid_aeps:
+            valid_aeps = aep_cols  # fallback: show all if none recognised
+
         prev_from = self.cmb_aep_from.currentText()
         prev_to = self.cmb_aep_to.currentText()
         self.cmb_aep_from.blockSignals(True)
         self.cmb_aep_to.blockSignals(True)
         self.cmb_aep_from.clear()
         self.cmb_aep_to.clear()
-        self.cmb_aep_from.addItems(aep_cols)
-        self.cmb_aep_to.addItems(aep_cols)
-        if prev_from in aep_cols:
+        self.cmb_aep_from.addItems(valid_aeps)
+        self.cmb_aep_to.addItems(valid_aeps)
+        if prev_from in valid_aeps:
             self.cmb_aep_from.setCurrentText(prev_from)
-        if prev_to in aep_cols:
+        if prev_to in valid_aeps:
             self.cmb_aep_to.setCurrentText(prev_to)
         self.cmb_aep_from.blockSignals(False)
         self.cmb_aep_to.blockSignals(False)
+
+        # Re-run duration intersection if temporal patterns already loaded
+        if self._tp_dur_mins:
+            self._refresh_dur_combo()
 
     def _browse_temporal(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1373,7 +1392,17 @@ class RorbRunDialog(QDialog):
             patterns = _arr.load_patterns(path)
         except Exception:
             return
-        dur_mins = sorted({k[0] for k in patterns.keys()})
+        self._tp_dur_mins = {k[0] for k in patterns.keys()}
+        if not self._tp_dur_mins:
+            return
+        self._refresh_dur_combo()
+
+    def _refresh_dur_combo(self):
+        """Rebuild duration combos from the intersection of IFD and temporal-pattern durations."""
+        dur_mins = sorted(self._tp_dur_mins)
+        # Intersect with IFD durations when both are loaded
+        if self._ifd_dur_mins:
+            dur_mins = sorted(self._tp_dur_mins & self._ifd_dur_mins)
         if not dur_mins:
             return
 

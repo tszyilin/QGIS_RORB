@@ -54,11 +54,17 @@ _SCENARIO_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea',
 def _parse_filename(fname):
     stem = os.path.splitext(fname)[0].lower()
     aep_label = None
-    m = re.search(r'aep(\d+)(?:[p_](\d+))?(ey)?', stem)
+    # '1 in N' form: aep1in200, aep1in500, aep1in10000, etc.
+    m = re.search(r'aep1in(\d+)', stem)
     if m:
-        whole = int(m.group(1)); frac = m.group(2); is_ey = bool(m.group(3))
-        val = f"{whole}.{frac}" if frac else str(whole)
-        aep_label = f"{val} EY" if is_ey else f"{val}% AEP"
+        aep_label = f"1 in {int(m.group(1))}"
+    else:
+        # Percentage / EY form: aep63_2, aep1, aep2ey, etc.
+        m = re.search(r'aep(\d+)(?:[p_](\d+))?(ey)?', stem)
+        if m:
+            whole = int(m.group(1)); frac = m.group(2); is_ey = bool(m.group(3))
+            val = f"{whole}.{frac}" if frac else str(whole)
+            aep_label = f"{val} EY" if is_ey else f"{val}% AEP"
     dur_min, dur_label = None, None
     m = re.search(r'du(\d+)(?:_(\d+))?(min|hour)', stem)
     if m:
@@ -78,6 +84,10 @@ def _parse_filename(fname):
 
 def _aep_sort_key(aep_label):
     import math
+    # '1 in N' → AEP% = 100/N
+    m = re.search(r'1 in (\d+)', aep_label)
+    if m:
+        return -(100.0 / int(m.group(1)))
     m = re.search(r'([\d.]+)', aep_label)
     if not m: return 0.0
     val = float(m.group(1))

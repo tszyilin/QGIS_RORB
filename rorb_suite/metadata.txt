@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.0
+version=2.1
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,7 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.1: Run RORB: AEP labels normalised ('63.20%' matches '63.2%'); extreme AEPs ('1 in 10000', '1 in 3684613'/PMP etc.) mapped to rare temporal patterns automatically; AEP combo filtered to recognisable labels; duration combo shows only durations present in both IFD and temporal-patterns CSVs.
 v2.0: Build .catg: named shapefiles added to layer panel when saved to folder; single-outlet topology check added. Run RORB: batch-from-.stm-folder mode; Build .catg embedded as first tab. Results Viewer: RORB <v6.52 time-axis correction flagged in Files tab, Hydrograph Viewer preview, and Export warning banner; export message shows actual time step per file.
 v1.16: Lumped ISA row count read from .catg control vector (all -99 = 1 group); row count no longer hardcoded.
 v1.15: Lumped mode now shows 1 row (Num ISA :1) instead of one row per sub-area.
