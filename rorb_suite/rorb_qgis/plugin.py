@@ -58,9 +58,11 @@ class RorbQgisPlugin:
 
     def run_results(self):
         from .results_dialog import RorbResultsDialog
+        from qgis.PyQt.QtCore import QTimer
         if self.results_dialog is None:
             self.results_dialog = RorbResultsDialog(self.iface.mainWindow())
             self.iface.addDockWidget(RightDockWidgetArea, self.results_dialog)
-            self.results_dialog.setFloating(True)
+            # Defer setFloating to avoid a segfault on QGIS 3.38+ / newer Qt builds
+            QTimer.singleShot(0, lambda: self.results_dialog.setFloating(True))
         self.results_dialog.show()
         self.results_dialog.raise_()

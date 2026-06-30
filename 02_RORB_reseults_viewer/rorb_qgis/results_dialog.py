@@ -1462,7 +1462,36 @@ class RorbResultsDialog(QDockWidget):
         if dur_min is not None:
             entries = [e for e in entries if e['parsed'][2] == dur_min]
         self._ax.clear()
-        rep_tp = crit['rep_tp'] if crit else None
+
+        # Update "Critical" combo label with the actual critical duration
+        self._dur_combo.blockSignals(True)
+        self._dur_combo.setItemText(
+            0, f'Critical ({crit["crit_dur"]})' if crit else 'Critical (auto)')
+        self._dur_combo.blockSignals(False)
+
+        # Representative TP for the currently displayed duration (not necessarily the
+        # overall critical one — each duration gets its own closest-to-mean TP)
+        rep_tp = None
+        rep_tp_peak = None
+        if crit:
+            if dur_min == crit['crit_min']:
+                rep_tp, rep_tp_peak = crit['rep_tp'], crit['rep_peak']
+            elif entries:
+                _method = (self._rep_method.currentData()
+                           if hasattr(self, '_rep_method') else 'closest')
+                _peaks = []
+                for _e in entries:
+                    _q = self._get_hydro(_e, node)
+                    _pk = float(np.max(_q)) if _q is not None and len(_q) else 0.0
+                    _peaks.append((_e['parsed'][3], _pk))
+                if _peaks:
+                    _mean = sum(p for _, p in _peaks) / len(_peaks)
+                    if _method == 'above':
+                        _above = [(tp, pk) for tp, pk in _peaks if pk >= _mean]
+                        _pool = _above if _above else _peaks
+                        rep_tp, rep_tp_peak = min(_pool, key=lambda x: abs(x[1] - _mean))
+                    else:
+                        rep_tp, rep_tp_peak = min(_peaks, key=lambda x: abs(x[1] - _mean))
         active_peaks = []
         for e in sorted(entries, key=lambda x: x['parsed'][3]):
             tp_num = e['parsed'][3]
@@ -1502,8 +1531,10 @@ class RorbResultsDialog(QDockWidget):
             summary_lines += [
                 f"Critical: {crit['crit_dur']}",
                 f"Mean pk:  {crit['mean_peak']:.3f} m³/s",
-                f"Rep TP:   TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)",
             ]
+            if rep_tp is not None:
+                pk_s = f'  ({rep_tp_peak:.3f} m³/s)' if rep_tp_peak is not None else ''
+                summary_lines.append(f"Rep TP:   TP{rep_tp}{pk_s}")
         if any(e.get('time_shifted') for e in entries):
             summary_lines.append("⚠ RORB <v6.52 — time axis corrected")
         self._peak_summary.setText("\n".join(summary_lines))
