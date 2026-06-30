@@ -341,13 +341,10 @@ class URBS(Model):
         catchment_line_idx = 0
         lines = vector.splitlines()
         for i, line in enumerate(lines):
-            match line:
-                case URBS.Header.CONTROL.value:
-                    control_line_idx = i
-                case URBS.Header.CATCHMENT.value:
-                    catchment_line_idx = i
-                case _:
-                    continue
+            if line == URBS.Header.CONTROL.value:
+                control_line_idx = i
+            elif line == URBS.Header.CATCHMENT.value:
+                catchment_line_idx = i
 
         control_content = "\n".join(lines[control_line_idx+1: catchment_line_idx])
         catchment_content = "\n".join(lines[catchment_line_idx+1:])

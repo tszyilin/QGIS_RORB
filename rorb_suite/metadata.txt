@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.4
+version=2.5
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,7 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.5: Fix SyntaxError on QGIS 3.28 (Python 3.9) — replace match/case statements in bundled pyromb vendor code with equivalent if/elif chains.
 v2.4: Build .catg: error reaches and nodes shown with red thick highlight and red bold ID labels on map canvas (replaces yellow selection).
 v2.3: Build .catg: after running checks, error reaches (ID mismatch, unmatched, negative slope) and error nodes (isolated, extra outlets) are automatically selected in the QGIS map so they are visually highlighted.
 v2.2: Fix Results Viewer crash (silent segfault) on QGIS 3.38+ when clicking the toolbar icon — defer setFloating(True) to next event loop tick.

@@ -79,17 +79,16 @@ class ResultLoader:
 
     def _format_aep(self, aep_value: str) -> str:
         """Format AEP value for file paths."""
-        match aep_value:
-            case '0.05':
-                return 'aep1in2000'
-            case '0.1':
-                return 'aep1in1000'
-            case '0.2':
-                return 'aep1in500'
-            case '0.5':
-                return 'aep1in200'
-            case _:
-                return f"aep{aep_value}"
+        if aep_value == '0.05':
+            return 'aep1in2000'
+        elif aep_value == '0.1':
+            return 'aep1in1000'
+        elif aep_value == '0.2':
+            return 'aep1in500'
+        elif aep_value == '0.5':
+            return 'aep1in200'
+        else:
+            return f"aep{aep_value}"
 
     def _format_duration(self, duration: str) -> str:
         """Format duration value for file paths."""
