@@ -13,10 +13,14 @@ from qgis.PyQt.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QMessageBox,
 )
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtGui import QFont
+from qgis.PyQt.QtGui import QFont, QColor
 
-from qgis.gui import QgsMapLayerComboBox
-from qgis.core import QgsProject, QgsDistanceArea, QgsUnitTypes
+from qgis.gui import QgsMapLayerComboBox, QgsHighlight
+from qgis.core import (
+    QgsProject, QgsDistanceArea, QgsUnitTypes,
+    QgsPalLayerSettings, QgsTextFormat, QgsTextBufferSettings,
+    QgsVectorLayerSimpleLabeling,
+)
 from .compat import (ALIGN_RIGHT, ALIGN_CENTER,
                      LAYER_POINT, LAYER_LINE, LAYER_POLYGON)
 
@@ -44,12 +48,14 @@ class RorbPipelineDialog(QWidget):
         self._named_confs   = None
         self._named_reaches = None
         self._named_basins  = None
-        self._check_results = []
-        self._tmp_dir       = None
-        self._run_dialog    = None
+        self._check_results    = []
+        self._error_highlights = []   # QgsHighlight objects — kept alive here
+        self._tmp_dir          = None
+        self._run_dialog       = None
         self._setup_ui()
 
     def closeEvent(self, event):
+        self._clear_error_highlights()
         self._cleanup_tmp()
         super().closeEvent(event)
 
@@ -195,6 +201,70 @@ class RorbPipelineDialog(QWidget):
         if path:
             self.txt_output_catg.setText(path)
 
+    # ── Error highlighting ────────────────────────────────────────────────────
+
+    def _clear_error_highlights(self):
+        for h in self._error_highlights:
+            del h
+        self._error_highlights.clear()
+
+    def _highlight_errors(self, layer, error_ids):
+        """
+        Draw red thick QgsHighlight on each feature whose 'id' is in error_ids,
+        then enable ID labels (red, bold, white buffer) for those features only.
+        Returns the count of highlighted features.
+        """
+        no_id    = '' in error_ids
+        named_ids = {i for i in error_ids if i}
+        canvas   = self.iface.mapCanvas()
+        count    = 0
+
+        for feat in layer.getFeatures():
+            fid = str(feat['id']) if feat['id'] else ''
+            if fid not in named_ids and not (no_id and fid == ''):
+                continue
+            h = QgsHighlight(canvas, feat, layer)
+            h.setColor(QColor(210, 20, 20))
+            h.setFillColor(QColor(210, 20, 20, 60))
+            h.setWidth(5)
+            self._error_highlights.append(h)
+            count += 1
+
+        if not count:
+            return 0
+
+        # Build label filter expression for these features
+        parts = []
+        if named_ids:
+            quoted = ', '.join(f"'{i}'" for i in sorted(named_ids))
+            parts.append(f'"id" IN ({quoted})')
+        if no_id:
+            parts.append('"id" IS NULL OR "id" = \'\'')
+
+        buf = QgsTextBufferSettings()
+        buf.setEnabled(True)
+        buf.setSize(1.5)
+        buf.setColor(QColor(255, 255, 255))
+
+        tf = QgsTextFormat()
+        tf.setColor(QColor(200, 0, 0))
+        f = QFont('Arial', 9)
+        f.setBold(True)
+        tf.setFont(f)
+        tf.setSize(9)
+        tf.setBuffer(buf)
+
+        lbl = QgsPalLayerSettings()
+        lbl.fieldName   = 'id'
+        lbl.filterType  = QgsPalLayerSettings.Rule
+        lbl.ruleExpression = ' OR '.join(f'({p})' for p in parts)
+        lbl.setFormat(tf)
+
+        layer.setLabeling(QgsVectorLayerSimpleLabeling(lbl))
+        layer.setLabelsEnabled(True)
+        layer.triggerRepaint()
+        return count
+
     # ── Pipeline ──────────────────────────────────────────────────────────────
 
     def _log(self, status, msg):
@@ -233,6 +303,7 @@ class RorbPipelineDialog(QWidget):
         self.txt_log.clear()
         self.lbl_status.setText('')
         self._named_cents = self._named_confs = self._named_reaches = self._named_basins = None
+        self._clear_error_highlights()
 
         try:
             self._run_pipeline(sub, cent, conf, reach, folder, prefix, use_temp)
@@ -296,34 +367,17 @@ class RorbPipelineDialog(QWidget):
         for status, msg in self._check_results:
             self._log(status, msg)
 
-        # Select error features in the map so the user can see them immediately
-        named_reaches.removeSelection()
-        named_cents.removeSelection()
-        named_confs.removeSelection()
-
+        # Highlight error features in red on the map canvas
+        self._clear_error_highlights()
         if err_reach_ids:
-            parts = []
-            no_id = '' in err_reach_ids or None in err_reach_ids
-            named_ids = {i for i in err_reach_ids if i and i != 'None'}
-            if named_ids:
-                quoted = ', '.join(f"'{i}'" for i in sorted(named_ids))
-                parts.append(f'"id" IN ({quoted})')
-            if no_id:
-                parts.append('"id" IS NULL OR "id" = \'\'')
-            if parts:
-                named_reaches.selectByExpression(' OR '.join(f'({p})' for p in parts))
-            n = named_reaches.selectedFeatureCount()
+            n = self._highlight_errors(named_reaches, err_reach_ids)
             if n:
-                self._log('warn', f'{n} error reach(es) selected in map (shown in yellow)')
-
+                self._log('warn', f'{n} error reach(es) marked red on map')
         if err_node_ids:
-            quoted = ', '.join(f"'{i}'" for i in sorted(err_node_ids))
-            expr = f'"id" IN ({quoted})'
-            named_cents.selectByExpression(expr)
-            named_confs.selectByExpression(expr)
-            n = named_cents.selectedFeatureCount() + named_confs.selectedFeatureCount()
-            if n:
-                self._log('warn', f'{n} error node(s) selected in map (shown in yellow)')
+            nc = self._highlight_errors(named_cents, err_node_ids)
+            nf = self._highlight_errors(named_confs, err_node_ids)
+            if nc + nf:
+                self._log('warn', f'{nc + nf} error node(s) marked red on map')
 
         n_fail = sum(1 for s, _ in self._check_results if s == 'fail')
         n_warn = sum(1 for s, _ in self._check_results if s == 'warn')
