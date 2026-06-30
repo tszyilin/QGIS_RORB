@@ -16,7 +16,6 @@
     <uploaded_by>tszyilin</uploaded_by>
     <create_date>2026-06-23</create_date>
     <update_date>2026-06-30</update_date>
-    <!-- v2.2: fix Results Viewer crash on QGIS 3.38+ -->
     <experimental>False</experimental>
     <deprecated>False</deprecated>
     <tracker>https://github.com/tszyilin/QGIS_RORB/issues</tracker>
