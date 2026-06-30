@@ -11,6 +11,7 @@ import tempfile
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QMessageBox,
+    QTableWidget, QTableWidgetItem, QCheckBox, QComboBox, QHeaderView, QFrame,
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QFont, QColor
@@ -29,12 +30,17 @@ from .pipeline_utils import (
     name_reaches, run_checks,
 )
 from .custom_types.qvector_layer import QVectorLayer
-try:
-    import pyromb
-except ImportError:
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
-    import pyromb
+
+# Purge any previously cached pyromb from sys.modules so that after a plugin
+# update (without a full QGIS restart) we always load the freshly-extracted
+# vendor copy rather than the old in-memory module.
+import sys as _sys
+_vendor_dir = os.path.join(os.path.dirname(__file__), 'vendor')
+for _k in [k for k in _sys.modules if k == 'pyromb' or k.startswith('pyromb.')]:
+    del _sys.modules[_k]
+if _vendor_dir not in _sys.path:
+    _sys.path.insert(0, _vendor_dir)
+import pyromb
 
 
 class RorbPipelineDialog(QWidget):
@@ -69,8 +75,16 @@ class RorbPipelineDialog(QWidget):
     def _setup_ui(self):
         self.setWindowTitle('RORB Pipeline')
         self.setMinimumWidth(580)
-        root = QVBoxLayout(self)
+
+        # Outer horizontal layout: steps on the left, print panel on the right
+        outer = QHBoxLayout(self)
+        outer.setSpacing(8)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        _left = QWidget()
+        root = QVBoxLayout(_left)
         root.setSpacing(10)
+        outer.addWidget(_left, 1)
 
         # ── Step 1: layers ───────────────────────────────────────────────────
         grp1 = QGroupBox('Step 1 — Select Input Layers')
@@ -115,19 +129,109 @@ class RorbPipelineDialog(QWidget):
         self.btn_run.clicked.connect(self._on_run)
         vlay3.addWidget(self.btn_run)
 
+        # Horizontal body: log (left, stretches) | stats sidebar (right, fixed)
+        h_body = QHBoxLayout()
+        h_body.setSpacing(6)
+
+        # ── log column ───────────────────────────────────────────────────────
+        log_col = QVBoxLayout()
+        log_col.setSpacing(4)
+
         self.txt_log = QTextEdit()
         self.txt_log.setReadOnly(True)
-        self.txt_log.setMinimumHeight(200)
+        self.txt_log.setMinimumHeight(100)
+        self.txt_log.setMaximumHeight(160)
         self.txt_log.setPlaceholderText('Pipeline output will appear here…')
         self.txt_log.setFont(QFont('Consolas', 9))
-        vlay3.addWidget(self.txt_log)
+        log_col.addWidget(self.txt_log)
 
         self.lbl_status = QLabel('')
         self.lbl_status.setAlignment(ALIGN_CENTER)
-        f = QFont(); f.setBold(True); f.setPointSize(10)
-        self.lbl_status.setFont(f)
-        vlay3.addWidget(self.lbl_status)
+        _sf = QFont(); _sf.setBold(True); _sf.setPointSize(10)
+        self.lbl_status.setFont(_sf)
+        log_col.addWidget(self.lbl_status)
+        h_body.addLayout(log_col, 1)
+
+        # ── stats sidebar ────────────────────────────────────────────────────
+        side = QFrame()
+        side.setFrameShape(QFrame.StyledPanel)
+        side.setFixedWidth(138)
+        sv = QVBoxLayout(side)
+        sv.setSpacing(2)
+        sv.setContentsMargins(6, 6, 6, 6)
+
+        _t = QLabel('<b>Stats</b>')
+        _t.setAlignment(ALIGN_CENTER)
+        sv.addWidget(_t)
+
+        def _hsep():
+            s = QFrame()
+            s.setFrameShape(QFrame.HLine)
+            s.setFrameShadow(QFrame.Sunken)
+            sv.addWidget(s)
+
+        def _stat(label):
+            lbl = QLabel(label)
+            lbl.setStyleSheet('font-size:8pt; color:#666;')
+            sv.addWidget(lbl)
+            val = QLabel('—')
+            val.setAlignment(ALIGN_CENTER)
+            val.setStyleSheet('font-size:11pt; font-weight:bold; color:#333;')
+            sv.addWidget(val)
+            return val
+
+        _hsep()
+        self._stat_subs  = _stat('Sub-catchments')
+        self._stat_jun   = _stat('Junctions')
+        self._stat_cen   = _stat('Centroids')
+        self._stat_rch   = _stat('Reaches')
+        _hsep()
+        self._stat_euler = QLabel('—')
+        self._stat_euler.setAlignment(ALIGN_CENTER)
+        self._stat_euler.setWordWrap(True)
+        self._stat_euler.setStyleSheet('font-size:8pt; color:#333;')
+        sv.addWidget(self._stat_euler)
+        _hsep()
+        _pn = QLabel('Print nodes')
+        _pn.setStyleSheet('font-size:8pt; color:#666;')
+        sv.addWidget(_pn)
+        self._stat_print = QLabel('—')
+        self._stat_print.setWordWrap(True)
+        self._stat_print.setAlignment(ALIGN_CENTER)
+        self._stat_print.setStyleSheet('font-size:8pt; color:#333;')
+        sv.addWidget(self._stat_print)
+        sv.addStretch()
+
+        h_body.addWidget(side)
+        vlay3.addLayout(h_body)
         root.addWidget(grp3)
+
+        # ── Print node settings (right panel, hidden until pipeline runs) ───────
+        self._grp_print = QGroupBox('Print Node Settings')
+        self._grp_print.setVisible(False)
+        self._grp_print.setFixedWidth(280)
+        vlay_p = QVBoxLayout(self._grp_print)
+
+        self.tbl_print = QTableWidget(0, 3)
+        self.tbl_print.setHorizontalHeaderLabels(['Node', 'Print?', 'Code'])
+        self.tbl_print.setSelectionMode(QTableWidget.NoSelection)
+        hdr = self.tbl_print.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.tbl_print.setColumnWidth(1, 55)
+        self.tbl_print.setColumnWidth(2, 68)
+        vlay_p.addWidget(self.tbl_print, 1)
+
+        p_row = QHBoxLayout()
+        p_row.addStretch()
+        self.btn_apply_print = QPushButton('Apply Print Settings')
+        self.btn_apply_print.setToolTip(
+            'Write checked print nodes and selected codes back to the confluence layer')
+        self.btn_apply_print.clicked.connect(self._on_apply_print)
+        p_row.addWidget(self.btn_apply_print)
+        vlay_p.addLayout(p_row)
+        outer.addWidget(self._grp_print)
 
         # ── Step 4: build ────────────────────────────────────────────────────
         grp4 = QGroupBox('Step 4 — Build RORB Control File')
@@ -304,6 +408,11 @@ class RorbPipelineDialog(QWidget):
         self.lbl_status.setText('')
         self._named_cents = self._named_confs = self._named_reaches = self._named_basins = None
         self._clear_error_highlights()
+        self._grp_print.setVisible(False)
+        self.tbl_print.setRowCount(0)
+        for _lbl in (self._stat_subs, self._stat_jun, self._stat_cen,
+                     self._stat_rch, self._stat_euler, self._stat_print):
+            _lbl.setText('—')
 
         try:
             self._run_pipeline(sub, cent, conf, reach, folder, prefix, use_temp)
@@ -320,52 +429,52 @@ class RorbPipelineDialog(QWidget):
             self._cleanup_tmp()
             work_dir = tempfile.mkdtemp(prefix='rorb_pipeline_')
             self._tmp_dir = work_dir
-            self._log('info', 'No folder specified — saving named layers as temporary')
         else:
             work_dir = folder
 
         p = lambda name: os.path.join(work_dir, f'{prefix}_{name}.shp')
 
         # ── 1. Name subcatchments ────────────────────────────────────────────
-        self._log('info', 'Naming subcatchments south → north…')
         named_subs = name_subcatchments(sub, p('subs'))
         QgsProject.instance().addMapLayer(named_subs, not use_temp)
-        lbl = '(temporary)' if use_temp else p('subs')
-        self._log('pass', f'Subcatchments named → {lbl}')
+        n_subs = named_subs.featureCount()
         self._named_basins = named_subs
 
         # ── 2. Name centroids ────────────────────────────────────────────────
-        self._log('info', 'Naming centroids…')
         named_cents = name_centroids(named_subs, cent, p('centroids'))
         QgsProject.instance().addMapLayer(named_cents, not use_temp)
-        lbl = '(temporary)' if use_temp else p('centroids')
-        self._log('pass', f'Centroids named → {lbl}')
         self._named_cents = named_cents
 
         # ── 3. Name confluences ──────────────────────────────────────────────
-        self._log('info', 'Naming confluences south → north…')
         named_confs = name_confluences(conf, p('confluences'))
         QgsProject.instance().addMapLayer(named_confs, not use_temp)
-        lbl = '(temporary)' if use_temp else p('confluences')
-        self._log('pass', f'Confluences named → {lbl}')
         self._named_confs = named_confs
+        self._populate_print_table(named_confs)
 
         # ── 4. Name reaches ──────────────────────────────────────────────────
-        self._log('info', 'Naming reaches…')
         named_reaches, unnamed = name_reaches(named_cents, named_confs, reach, p('reaches'))
         QgsProject.instance().addMapLayer(named_reaches, not use_temp)
-        lbl = '(temporary)' if use_temp else p('reaches')
-        self._log('pass', f'Reaches named → {lbl}')
-        if unnamed:
-            self._log('warn', f'{len(unnamed)} reach(es) could not be named (no nearby node)')
         self._named_reaches = named_reaches
 
+        dest = '(temporary)' if use_temp else folder
+        self._log('pass', f'Layers named  →  {dest}')
+        if unnamed:
+            self._log('warn', f'{len(unnamed)} reach(es) could not be named (no nearby node)')
+
         # ── 5. Checks ────────────────────────────────────────────────────────
-        self._log('info', '─── Running link checks ───')
+        n_cents  = named_cents.featureCount()
+        n_confs  = named_confs.featureCount()
+        n_rch    = named_reaches.featureCount()
+
         self._check_results, err_reach_ids, err_node_ids = run_checks(
             named_reaches, named_cents, named_confs)
         for status, msg in self._check_results:
-            self._log(status, msg)
+            if status in ('fail', 'warn'):
+                self._log(status, msg)
+        # passes are summarised in the sidebar; only failures/warnings appear in the log
+
+        # Update stats sidebar
+        self._update_sidebar(n_subs, n_cents, n_confs, n_rch, named_confs)
 
         # Highlight error features in red on the map canvas
         self._clear_error_highlights()
@@ -401,6 +510,122 @@ class RorbPipelineDialog(QWidget):
             self.txt_output.setText(os.path.join(out_dir, f'{prefix}.cat'))
         if not self.txt_output_catg.text().strip():
             self.txt_output_catg.setText(os.path.join(out_dir, f'{prefix}.catg'))
+
+    # ── Print node editor ─────────────────────────────────────────────────────
+
+    def _populate_print_table(self, named_confs):
+        self.tbl_print.setRowCount(0)
+        field_names = {f.name() for f in named_confs.fields()}
+        has_pn  = 'print_node'  in field_names
+        has_pc  = 'print_code'  in field_names
+        has_out = 'out'         in field_names
+
+        feats = sorted(named_confs.getFeatures(),
+                       key=lambda f: str(f['id']) if f['id'] else '')
+
+        for feat in feats:
+            row = self.tbl_print.rowCount()
+            self.tbl_print.insertRow(row)
+
+            node_id = str(feat['id']) if feat['id'] else '?'
+            is_out  = bool(int(feat['out'] or 0)) if (has_out and feat['out'] is not None) else False
+            label   = f'{node_id}  [outlet]' if is_out else node_id
+
+            item = QTableWidgetItem(label)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setData(Qt.UserRole, node_id)
+            self.tbl_print.setItem(row, 0, item)
+
+            chk = QCheckBox()
+            pn  = int(feat['print_node'] or 0) if (has_pn and feat['print_node'] is not None) else 0
+            chk.setChecked(bool(pn))
+
+            cmb = QComboBox()
+            cmb.addItems(['7', '7.1', '7.2'])
+            pc  = str(feat['print_code']) if (has_pc and feat['print_code']) else '7'
+            idx = cmb.findText(pc)
+            cmb.setCurrentIndex(idx if idx >= 0 else 0)
+            cmb.setEnabled(chk.isChecked())
+
+            chk.stateChanged.connect(lambda state, c=cmb: c.setEnabled(bool(state)))
+
+            self.tbl_print.setCellWidget(row, 1, chk)
+            self.tbl_print.setCellWidget(row, 2, cmb)
+
+        self._grp_print.setVisible(True)
+
+    def _on_apply_print(self):
+        if not self._named_confs:
+            return
+        layer  = self._named_confs
+        fields = layer.fields()
+        pn_idx = fields.indexFromName('print_node')
+        pc_idx = fields.indexFromName('print_code')
+        if pn_idx < 0 or pc_idx < 0:
+            QMessageBox.warning(self, 'Missing fields',
+                                'Confluence layer is missing print_node / print_code fields.')
+            return
+
+        id_to_fid = {str(f['id']): f.id() for f in layer.getFeatures()}
+        layer.startEditing()
+        for row in range(self.tbl_print.rowCount()):
+            node_id = self.tbl_print.item(row, 0).data(Qt.UserRole)
+            chk     = self.tbl_print.cellWidget(row, 1)
+            cmb     = self.tbl_print.cellWidget(row, 2)
+            pn      = 1 if chk.isChecked() else 0
+            pc      = cmb.currentText() if chk.isChecked() else ''
+            fid     = id_to_fid.get(node_id)
+            if fid is not None:
+                layer.changeAttributeValue(fid, pn_idx, pn)
+                layer.changeAttributeValue(fid, pc_idx, pc)
+        layer.commitChanges()
+        layer.triggerRepaint()
+        self._log('pass', 'Print settings applied to confluence layer')
+
+    def _update_sidebar(self, n_subs, n_cents, n_confs, n_rch, named_confs):
+        # Sub-catchments with range colour
+        self._stat_subs.setText(str(n_subs))
+        if 4 <= n_subs <= 30:
+            self._stat_subs.setStyleSheet(
+                'font-size:11pt; font-weight:bold; color:#1a7a1a;')
+        else:
+            self._stat_subs.setStyleSheet(
+                'font-size:11pt; font-weight:bold; color:#d68910;')
+
+        self._stat_jun.setText(str(n_confs))
+        self._stat_cen.setText(str(n_cents))
+        self._stat_rch.setText(str(n_rch))
+
+        # Euler check
+        lhs, rhs = n_confs + n_cents, n_rch + 1
+        if lhs == rhs:
+            self._stat_euler.setText('✓ Euler OK')
+            self._stat_euler.setStyleSheet(
+                'font-size:8pt; font-weight:bold; color:#1a7a1a;')
+        else:
+            diff = lhs - rhs
+            word = 'extra' if diff > 0 else 'missing'
+            self._stat_euler.setText(f'✗ {abs(diff)} {word}')
+            self._stat_euler.setStyleSheet(
+                'font-size:8pt; font-weight:bold; color:#c0392b;')
+
+        # Print nodes
+        field_names = {f.name() for f in named_confs.fields()}
+        print_nodes = []
+        if 'print_node' in field_names and 'print_code' in field_names:
+            for feat in named_confs.getFeatures():
+                try:
+                    if int(feat['print_node'] or 0) == 1:
+                        pc = str(feat['print_code']) if feat['print_code'] else '7'
+                        print_nodes.append(f"{feat['id']} ({pc})")
+                except (ValueError, TypeError):
+                    pass
+        if print_nodes:
+            self._stat_print.setText('\n'.join(print_nodes))
+            self._stat_print.setStyleSheet('font-size:8pt; color:#1a7a1a;')
+        else:
+            self._stat_print.setText('none set')
+            self._stat_print.setStyleSheet('font-size:8pt; color:#d68910;')
 
     # ── Build ─────────────────────────────────────────────────────────────────
 

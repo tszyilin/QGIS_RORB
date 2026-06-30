@@ -525,4 +525,19 @@ def run_checks(reach_layer, cent_layer, conf_layer):
             f'{sorted(outlets)}'))
         error_node_ids.update(outlets)
 
+    # ── Euler check: junctions + centroids = reaches + 1 ─────────────────────
+    n_rch = reach_layer.featureCount()
+    n_jun = conf_layer.featureCount()
+    n_cen = cent_layer.featureCount()
+    lhs, rhs = n_jun + n_cen, n_rch + 1
+    if lhs == rhs:
+        results.append(('pass',
+            f'Euler check: {n_jun} junctions + {n_cen} centroids = {n_rch} reaches + 1'))
+    else:
+        diff = lhs - rhs
+        word = 'extra' if diff > 0 else 'missing'
+        results.append(('fail',
+            f'Euler check: {n_jun} junctions + {n_cen} centroids = {lhs} '
+            f'≠ {n_rch} reaches + 1 = {rhs}  ({abs(diff)} {word} node(s))'))
+
     return results, error_reach_ids, error_node_ids

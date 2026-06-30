@@ -58,8 +58,10 @@ class CreateConfluenceAlgorithm(QgsProcessingAlgorithm):
         crs    = self.parameterAsCrs(parameters, self.CRS, context)
 
         fields = QgsFields()
-        fields.append(QgsField('id',  STRING))
-        fields.append(QgsField('out', INT))
+        fields.append(QgsField('id',         STRING))
+        fields.append(QgsField('out',        INT))
+        fields.append(QgsField('print_node', INT))     # 0 = no print, 1 = print at this node
+        fields.append(QgsField('print_code', STRING))  # '7', '7.1', or '7.2'
 
         out_crs = source.sourceCrs() if source else crs
 
@@ -70,17 +72,30 @@ class CreateConfluenceAlgorithm(QgsProcessingAlgorithm):
 
         if source:
             total = source.featureCount()
+            existing_names = {f.name() for f in source.fields()}
             for i, feat in enumerate(source.getFeatures()):
-                out_val = 0
-                if 'out' in [f.name() for f in feat.fields()]:
-                    try:
-                        out_val = int(feat['out']) if feat['out'] is not None else 0
-                    except (ValueError, TypeError):
-                        out_val = 0
+                def _int(fname, default=0):
+                    if fname in existing_names:
+                        try:
+                            return int(feat[fname]) if feat[fname] is not None else default
+                        except (ValueError, TypeError):
+                            pass
+                    return default
+
+                def _str(fname, default=''):
+                    if fname in existing_names:
+                        v = feat[fname]
+                        return str(v) if v is not None else default
+                    return default
 
                 out = QgsFeature(fields)
                 out.setGeometry(feat.geometry())
-                out.setAttributes(['', out_val])
+                out.setAttributes([
+                    '',                        # id (blank — filled by Auto Name Confluences)
+                    _int('out'),               # outlet flag
+                    _int('print_node'),        # print at this node
+                    _str('print_code'),        # '7', '7.1', '7.2'
+                ])
                 sink.addFeature(out, FAST_INSERT)
                 feedback.setProgress(int((i + 1) / total * 100) if total else 0)
         else:
@@ -106,12 +121,14 @@ class CreateConfluenceAlgorithm(QgsProcessingAlgorithm):
     def shortHelpString(self):
         return self.tr(
             "Create a confluence point layer with the required RORB fields:\n\n"
-            "  id  — confluence identifier (string, blank — filled by Auto Name Confluences)\n"
-            "  out — outlet flag (integer, 0 = internal node, 1 = catchment outlet)\n\n"
-            "Input layer (optional): if provided, geometry is copied and the 'out' field "
-            "is preserved if it exists. If left empty, an empty template layer is created "
-            "ready for manual digitising.\n\n"
-            "Run Auto Name Confluences after digitising to assign letter IDs (a, b, c, …)."
+            "  id         — confluence identifier (blank — filled by Auto Name Confluences)\n"
+            "  out        — outlet flag (0 = internal node, 1 = catchment outlet)\n"
+            "  print_node — print flag (0 = no print, 1 = insert print instruction)\n"
+            "  print_code — print instruction: '7' (discharge), '7.1' (disc+actual), '7.2' (dummy gauge)\n\n"
+            "Input layer (optional): if provided, geometry is copied and existing field "
+            "values are preserved. If left empty, an empty template layer is created.\n\n"
+            "Run Auto Name Confluences after digitising to assign letter IDs (a, b, c, …).\n"
+            "Use the Print Node Settings panel in Build RORB .catg to assign print codes interactively."
         )
 
     def tr(self, string):

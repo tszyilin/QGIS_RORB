@@ -90,5 +90,10 @@ class Builder:
             s = confluence.geometry(i)
             p = s[0]
             r = confluence.record(i)
-            confluences.append(Confluence(r['id'], p[0], p[1],  bool(r['out'])))
+            field_names = {f.name() for f in r.fields()}
+            pn = (r['print_node'] if r['print_node'] is not None else None) if 'print_node' in field_names else None
+            pc_raw = (str(r['print_code']) if r['print_code'] is not None else '') if 'print_code' in field_names else ''
+            nm_raw = (str(r['node_name']) if r['node_name'] is not None else '') if 'node_name' in field_names else ''
+            pc = pc_raw if (pn is None or int(pn or 0) == 1) else ''
+            confluences.append(Confluence(r['id'], p[0], p[1], bool(r['out']), pc, nm_raw))
         return confluences

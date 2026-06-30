@@ -55,6 +55,7 @@ class VectorBlock():
         vectorStr = "0\n"                   # Start with code 0, reach types are specified in the control block.
         for s in self._controlVector:
             vectorStr += f"{s}\n"
+        vectorStr += "0\n"                  # End-of-vector sentinel (required before sub-area data)
         vectorStr += f"{self._subAreaStr(self._stateVector, traveller)}\n{self._fracImpStr(self._stateVector, traveller)}\n"
         return vectorStr
 
@@ -116,22 +117,33 @@ class VectorBlock():
             The traveller traversing this catchment.
         """
         if code[0] in (1, 2, 5):
+            # For confluence routing (code 5): inject print instruction before reach routing
+            if code[0] == 5:
+                try:
+                    node = traveller.getNode(code[1])
+                    if isinstance(node, Confluence):
+                        pc = node.print_code if node.print_code else ('7' if node.isOut else '')
+                        if pc:
+                            nm = node.node_name if node.node_name else node.name
+                            self._controlVector.append(f"{pc}\n{nm}")
+                except Exception:
+                    pass
+
             try:
                 r = traveller.getReach(code[1])
                 if (r.type == ReachType.NATURAL) or (r.type == ReachType.DROWNED):
                     ret = f"{code[0]},{r.type.value},{r.length() / 1000:.3f},-99"
                 else:
                     ret = f"{code[0]},{r.type.value},{r.length() / 1000:.3f},{r.getSlope()},-99"
-            except:
-                ret = f"{7}\n\n{0}"
+                self._controlVector.append(ret)
+            except Exception:
+                pass  # Outlet has no downstream reach — print instruction already appended
 
-        if (code[0] == 3) or (code[0] == 4):
-            ret = f"{code[0]}"
+        elif (code[0] == 3) or (code[0] == 4):
+            self._controlVector.append(f"{code[0]}")
 
-        if (code[0] == 0):
-            ret = f"{7}\n\n'{0}"
-
-        self._controlVector.append(ret)
+        elif code[0] == 0:
+            self._controlVector.append("0")  # End-of-vector sentinel
 
     def _subAreaStr(self, code: tuple, traveller: Traveller) -> str:
         """Format the subarea string according to the RORB manual.
@@ -378,7 +390,12 @@ class GraphicsBlock():
         if code[0] in (1, 2, 5):
             node = traveller.getNode(pos)
             x, y = node.coordinates()
-            prnt = 70 if isinstance(node, Confluence) and node.isOut else 0
+            _PC_TO_PRNT = {'7': 70, '7.1': 71, '7.2': 72}
+            if isinstance(node, Confluence):
+                _pc = node.print_code if node.print_code else ('7' if node.isOut else '')
+                prnt = _PC_TO_PRNT.get(_pc, 0)
+            else:
+                prnt = 0
 
             ds_node = traveller.getNode(traveller.down(pos))
             ds_name = f"<{ds_node.name}>"

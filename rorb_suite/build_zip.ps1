@@ -23,6 +23,13 @@ Copy-Item -Recurse "$baseDir\rorb_qgis" "$tmpDir\rorb_suite\rorb_qgis"
 # Remove __pycache__
 Get-ChildItem -Path "$tmpDir\rorb_suite" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
+# Touch all .py timestamps to now so extracted files are always newer than any
+# cached .pyc left over from a previous plugin version (prevents stale bytecode).
+$now = Get-Date
+Get-ChildItem -Path "$tmpDir\rorb_suite" -Recurse -Filter "*.py" | ForEach-Object {
+    $_.LastWriteTime = $now
+}
+
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path "$tmpDir\rorb_suite" -DestinationPath $zipPath
 

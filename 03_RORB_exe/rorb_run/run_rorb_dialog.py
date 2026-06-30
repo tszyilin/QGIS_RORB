@@ -32,6 +32,75 @@ from .compat import ALIGN_RIGHT, ALIGN_CENTER
 from . import arr2016_runner as _arr
 
 
+# ── Pre-burst percentile → section key map ───────────────────────────────────
+
+_PB_LABEL_TO_KEY = {
+    '10%': '10', '25%': '25', '50% (median)': 'median', '75%': '75', '90%': '90',
+}
+
+
+# ── Pre-burst depth viewer dialog ────────────────────────────────────────────
+
+class _PrebustViewDialog(QDialog):
+    """Read-only table showing pre-burst depths (% of burst depth) from ARR hub."""
+
+    def __init__(self, preburst_data, percentile_key, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('ARR Pre-burst Rainfall Depths')
+        self.setMinimumSize(520, 400)
+        vlay = QVBoxLayout(self)
+
+        note = QLabel(
+            'Pre-burst depths are shown as percentages of the design storm burst depth\n'
+            '(ratio from ARR Data Hub × 100).  Values are read-only — edit the hub .txt to change them.'
+        )
+        note.setWordWrap(True)
+        vlay.addWidget(note)
+
+        table = preburst_data.get(percentile_key, {})
+        dur_keys = sorted(table.keys())
+        aep_cols = []
+        for dk in dur_keys:
+            for a in table[dk]:
+                if a not in aep_cols:
+                    aep_cols.append(a)
+
+        tbl = QTableWidget(len(dur_keys), len(aep_cols))
+        tbl.setHorizontalHeaderLabels(aep_cols)
+        dur_labels = []
+        for dk in dur_keys:
+            if dk < 60:
+                dur_labels.append(f'{dk} min')
+            elif dk % 60 == 0:
+                dur_labels.append(f'{dk // 60} hr')
+            else:
+                dur_labels.append(f'{dk} min')
+        tbl.setVerticalHeaderLabels(dur_labels)
+        tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        for r, dk in enumerate(dur_keys):
+            row = table[dk]
+            for c, aep in enumerate(aep_cols):
+                if aep in row:
+                    _, ratio = row[aep]
+                    val = ratio * 100.0
+                    item = QTableWidgetItem(f'{val:.4f}')
+                else:
+                    item = QTableWidgetItem('-999.00')
+                item.setTextAlignment(ALIGN_RIGHT | Qt.AlignVCenter)
+                tbl.setItem(r, c, item)
+
+        vlay.addWidget(tbl)
+
+        btn_ok = QPushButton('OK')
+        btn_ok.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        vlay.addLayout(btn_row)
+
+
 # ── ASCII-safe path helpers ──────────────────────────────────────────────────
 
 def _to_short_path(path):
@@ -382,7 +451,8 @@ class _EnsembleWorker(QThread):
 
     def __init__(self, exe, catg_path, depths_csv, rinc_csv, hub_txt,
                  aep_list, dur_min_list, out_dir, stm_dir=None,
-                 lumped=True, verbosity=None, lossmodel=None, areas_params=None):
+                 lumped=True, verbosity=None, lossmodel=None, areas_params=None,
+                 preburst_enabled=False, preburst_data=None, preburst_pct_key='median'):
         super().__init__()
         self.exe = exe
         self.catg_path = catg_path
@@ -397,6 +467,9 @@ class _EnsembleWorker(QThread):
         self.verbosity = verbosity
         self.lossmodel = lossmodel
         self.areas_params = areas_params
+        self.preburst_enabled = preburst_enabled
+        self.preburst_data = preburst_data or {}
+        self.preburst_pct_key = preburst_pct_key
         self._stop = False
 
     def stop(self):
@@ -516,9 +589,25 @@ class _EnsembleWorker(QThread):
                 area_km2=area_km2,
                 n_subareas=n_subareas,
             )
+
+            # Apply pre-burst: reduce IL by preburst depth
+            if self.preburst_enabled and self.preburst_data:
+                pb_mm = _arr.get_preburst_depth_mm(
+                    self.preburst_data, self.preburst_pct_key, dur_min, aep)
+                if pb_mm > 0:
+                    run_params = [
+                        dict(p, il=max(0.0, p['il'] - pb_mm))
+                        for p in self.areas_params
+                    ]
+                else:
+                    run_params = self.areas_params
+            else:
+                pb_mm = 0.0
+                run_params = self.areas_params
+
             write_par_file(par_path, catg_ws, stm_path,
                            self.lumped, self.verbosity, self.lossmodel,
-                           self.areas_params)
+                           run_params)
 
             try:
                 subprocess.run([self.exe, par_path],
@@ -568,9 +657,10 @@ class _EnsembleWorker(QThread):
             eta = elapsed / (run_i + 1) * (total - run_i - 1) if run_i > 0 else 0
             status = 'OK  ' if ok else 'FAIL'
             peak_s = f'{peak:.1f}' if peak is not None else 'None'
+            pb_s = f'  pb={pb_mm:.1f}mm' if pb_mm > 0 else ''
             self.progress.emit(
                 f'[{run_i + 1}/{total} {pct:.0f}%]  {base}: {status}  '
-                f'depth={run["depth_mm"]:.1f}mm  peak={peak_s} m3/s  ETA={eta:.0f}s'
+                f'depth={run["depth_mm"]:.1f}mm{pb_s}  peak={peak_s} m3/s  ETA={eta:.0f}s'
             )
 
         # ── Summary files ────────────────────────────────────────────────────
@@ -631,6 +721,10 @@ class _EnsembleWorker(QThread):
                 f.write(f' Parameters:  kc = {kc0:8.2f}    m = {m0:.2f}\n\n')
                 f.write(' Loss parameters     Initial loss (mm)   Cont. loss (mm/h)\n')
                 f.write(f'                          {il0:>8.2f}              {cl0:.2f}\n\n')
+                if self.preburst_enabled and self.preburst_data:
+                    pb_display = _arr._PB_KEY_LABELS.get(self.preburst_pct_key, self.preburst_pct_key)
+                    f.write(f' Pre-burst         : Applied ({pb_display} percentile)'
+                            f' — IL reduced by pre-burst depth\n\n')
                 if node_legend:
                     f.write(' Peak  Description\n')
                     for num, name in node_legend:
@@ -818,6 +912,7 @@ class RorbRunDialog(QDialog):
 
         self._run_mode = 'text'       # 'text' or 'plot'
         self._storm_mode = 'stm'      # 'stm' or 'arr2016'
+        self._preburst_cache = {}     # {hub_path: preburst_data}
 
         self._setup_ui()
         self._restore_settings()
@@ -856,6 +951,8 @@ class RorbRunDialog(QDialog):
         s.setValue('aep_to', self.cmb_aep_to.currentText())
         s.setValue('dur_from', self.cmb_dur_from.currentText())
         s.setValue('dur_to', self.cmb_dur_to.currentText())
+        s.setValue('preburst_enabled', self.chk_preburst.isChecked())
+        s.setValue('preburst_pct', self.cmb_preburst_pct.currentData() or '')
 
     def _restore_settings(self):
         s = QSettings('RORB', 'RunDialog')
@@ -886,6 +983,12 @@ class RorbRunDialog(QDialog):
             v = s.value(key, '')
             if v and cmb.findText(v) >= 0:
                 cmb.setCurrentText(v)
+
+        # Pre-burst checkbox state (percentile is restored after hub loads via _on_hub_changed)
+        pb_on = s.value('preburst_enabled', False)
+        if pb_on in (True, 'true', '1'):
+            self.chk_preburst.setChecked(True)
+        self._pb_restore_key = s.value('preburst_pct', '')
 
         # Restore storm mode last (so widgets exist)
         saved_mode = s.value('storm_mode', '')
@@ -1046,7 +1149,8 @@ class RorbRunDialog(QDialog):
 
         row_hub = QHBoxLayout()
         self.txt_hub = QLineEdit()
-        self.txt_hub.setPlaceholderText('ARR Data Hub .txt file (optional — provides ARF coefficients)…')
+        self.txt_hub.setPlaceholderText('ARR Data Hub .txt file (optional — provides ARF + pre-burst)…')
+        self.txt_hub.textChanged.connect(self._on_hub_changed)
         row_hub.addWidget(self.txt_hub)
         btn_hub = QPushButton('Browse…'); btn_hub.setFixedWidth(80)
         btn_hub.clicked.connect(self._browse_hub)
@@ -1107,6 +1211,25 @@ class RorbRunDialog(QDialog):
         btn_stm_dir.clicked.connect(self._browse_stm_dir)
         row_stm_dir.addWidget(btn_stm_dir)
         arr_form.addRow('.stm folder (optional):', row_stm_dir)
+
+        # Pre-Burst — single percentile, auto-detected from hub file
+        grp_pb = QGroupBox('Pre-Burst')
+        pb_h = QHBoxLayout(grp_pb)
+        pb_h.setContentsMargins(6, 4, 6, 4)
+        self.chk_preburst = QCheckBox('Apply Pre-burst')
+        pb_h.addWidget(self.chk_preburst)
+        pb_h.addSpacing(16)
+        pb_h.addWidget(QLabel('Percentile:'))
+        self.cmb_preburst_pct = QComboBox()
+        self.cmb_preburst_pct.setMinimumWidth(130)
+        self.cmb_preburst_pct.setPlaceholderText('(load hub file)')
+        pb_h.addWidget(self.cmb_preburst_pct)
+        pb_h.addSpacing(10)
+        self.btn_edit_preburst = QPushButton('Edit pre-burst')
+        self.btn_edit_preburst.clicked.connect(self._on_edit_preburst)
+        pb_h.addWidget(self.btn_edit_preburst)
+        pb_h.addStretch()
+        arr_form.addRow(grp_pb)
 
         self.wdg_arr.setVisible(False)
         storm_v.addWidget(self.wdg_arr)
@@ -1410,6 +1533,55 @@ class RorbRunDialog(QDialog):
             self.txt_stm_input_folder.text() or '')
         if path:
             self.txt_stm_input_folder.setText(path)
+
+    def _on_hub_changed(self, path=''):
+        """Auto-detect pre-burst percentiles from hub file and populate the combo."""
+        hub = path or self.txt_hub.text().strip()
+        self._preburst_cache = {k: v for k, v in self._preburst_cache.items() if k == hub}
+
+        prev_key = self.cmb_preburst_pct.currentData()
+        self.cmb_preburst_pct.blockSignals(True)
+        self.cmb_preburst_pct.clear()
+
+        if hub and os.path.isfile(hub):
+            try:
+                options = _arr.detect_preburst_percentiles(hub)
+            except Exception:
+                options = []
+            for label, key in options:
+                self.cmb_preburst_pct.addItem(label, key)
+            # Restore previous or saved selection
+            restore = prev_key or getattr(self, '_pb_restore_key', '')
+            idx = self.cmb_preburst_pct.findData(restore)
+            if idx >= 0:
+                self.cmb_preburst_pct.setCurrentIndex(idx)
+            elif self.cmb_preburst_pct.count() > 0:
+                # default to 75th or first available
+                idx75 = self.cmb_preburst_pct.findData('75')
+                self.cmb_preburst_pct.setCurrentIndex(idx75 if idx75 >= 0 else 0)
+
+        self.cmb_preburst_pct.blockSignals(False)
+
+    def _on_edit_preburst(self):
+        hub = self.txt_hub.text().strip()
+        if not hub or not os.path.isfile(hub):
+            QMessageBox.warning(self, 'No Data Hub file',
+                                'Please select an ARR Data Hub .txt file to view pre-burst depths.')
+            return
+        if hub not in self._preburst_cache:
+            try:
+                self._preburst_cache[hub] = _arr.load_preburst(hub)
+            except Exception as e:
+                QMessageBox.warning(self, 'Could not load pre-burst data', str(e))
+                return
+        preburst_data = self._preburst_cache[hub]
+        pct_key = self.cmb_preburst_pct.currentData()
+        if not pct_key or not preburst_data.get(pct_key):
+            QMessageBox.information(self, 'No pre-burst data',
+                                    'No pre-burst data detected — check the Data Hub file.')
+            return
+        dlg = _PrebustViewDialog(preburst_data, pct_key, parent=self)
+        dlg.exec_()
 
     def _update_exe_status(self):
         exe = self.txt_exe.text().strip()
@@ -1816,8 +1988,32 @@ class RorbRunDialog(QDialog):
         self.tabs.setCurrentIndex(3)  # Switch to Log tab
 
         self._last_out_folder = out_dir
+
+        # Load pre-burst data if enabled
+        pb_enabled = self.chk_preburst.isChecked()
+        pb_data = {}
+        pb_pct_key = self.cmb_preburst_pct.currentData() or 'median'
+        if pb_enabled and hub_txt:
+            if hub_txt in self._preburst_cache:
+                pb_data = self._preburst_cache[hub_txt]
+            else:
+                try:
+                    pb_data = _arr.load_preburst(hub_txt)
+                    self._preburst_cache[hub_txt] = pb_data
+                except Exception as e:
+                    self._log('warn', f'Could not load pre-burst data: {e} — pre-burst disabled')
+                    pb_enabled = False
+            if pb_enabled and not pb_data.get(pb_pct_key):
+                self._log('warn', 'No pre-burst data found in hub file for selected percentile — pre-burst disabled')
+                pb_enabled = False
+        elif pb_enabled and not hub_txt:
+            self._log('warn', 'Pre-burst enabled but no Data Hub file provided — pre-burst disabled')
+            pb_enabled = False
+
+        pb_label = self.cmb_preburst_pct.currentText() or pb_pct_key
         self._log('info', f'Starting ensemble: {len(selected_aeps)} AEPs x '
-                  f'{len(selected_durs)} durations')
+                  f'{len(selected_durs)} durations'
+                  + (f'  [Pre-burst: {pb_label}]' if pb_enabled else ''))
 
         stm_dir = self.txt_stm_dir.text().strip() or out_dir
 
@@ -1828,6 +2024,8 @@ class RorbRunDialog(QDialog):
             out_dir=out_dir, stm_dir=stm_dir,
             lumped=lumped, verbosity=verbosity, lossmodel=lossmodel,
             areas_params=areas_params,
+            preburst_enabled=pb_enabled, preburst_data=pb_data,
+            preburst_pct_key=pb_pct_key,
         )
         self._ens_worker.progress.connect(self._on_ens_progress)
         self._ens_worker.done.connect(self._on_ens_done)

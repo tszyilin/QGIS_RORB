@@ -14,7 +14,7 @@ QGIS_RORB/
   rorb_suite/             ← COMBINED distribution plugin (what users install)
     __init__.py           ← classFactory → RorbSuitePlugin
     metadata.txt          ← single metadata for the combined plugin
-    plugin.py             ← RorbSuitePlugin: 3-icon "RORB Tools" toolbar
+    plugin.py             ← RorbSuitePlugin: 4-icon "RORB Tools" toolbar
     rorb_catg/            ← copy of 01_RORB_catg/rorb_catg/
     rorb_qgis/            ← copy of 02_RORB_reseults_viewer/rorb_qgis/
     build_zip.ps1         ← THE build script users/CI should run
@@ -61,11 +61,19 @@ Users add this to QGIS Plugin Manager → Settings → Add custom repository:
 ```
 https://raw.githubusercontent.com/tszyilin/QGIS_RORB/main/plugins.xml
 ```
-Then install "RORB Tools" — they get all 3 toolbar icons in one plugin.
+Then install "RORB Tools" — they get all 4 toolbar icons in one plugin.
 
-## 3 toolbar icons (in order)
+## 4 toolbar icons (in order)
 | # | Icon file | Label | Action |
 |---|-----------|-------|--------|
 | 1 | `rorb_catg/icon_create.svg` | Create RORB Layers | Opens `CreateLayersDialog` |
 | 2 | `rorb_catg/icon_catg.svg` | Build RORB .catg | Opens `RorbPipelineDialog` |
-| 3 | generated (`_peak_icon()`) | RORB Results Viewer | Opens `RorbResultsDialog` (dockable) |
+| 3 | `rorb_catg/icon_run.svg` | Run RORB | Opens `RorbRunDialog` — runs `RORB_CMD.exe` against a `.catg`/`.stm` pair |
+| 4 | generated (`_peak_icon()`) | RORB Results Viewer | Opens `RorbResultsDialog` (dockable) |
+
+`RorbRunDialog` (`rorb_catg/run_rorb_dialog.py`) builds a `.par` parameter file and calls
+`RORB_CMD.exe` (bundled with a separately-licensed RORBwin install, not in the plugin zip).
+It parses the `.catg`'s interstation areas (including zero-area "dummy" stations) into an
+editable table so each area's `kc`/`m`/IL/CL can be set individually, or lumped to one
+shared `kc`/`m`. On success it can hand the resulting `.out` folder straight to the
+Results Viewer via `RorbResultsDialog.add_scenario()`.
