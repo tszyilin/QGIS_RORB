@@ -384,9 +384,14 @@ CHECK_SNAP = 0.5  # map units
 
 def run_checks(reach_layer, cent_layer, conf_layer):
     """
-    Returns a list of (status, message) where status ∈ {'pass', 'fail', 'warn'}.
+    Returns (results, error_reach_ids, error_node_ids).
+    results          – list of (status, message) where status ∈ {'pass', 'fail', 'warn'}
+    error_reach_ids  – set of reach 'id' strings with any error/warning
+    error_node_ids   – set of node 'id' strings with any error/warning
     """
     results = []
+    error_reach_ids = set()
+    error_node_ids  = set()
 
     def _check_fields(layer, required, label):
         names = [f.name() for f in layer.fields()]
@@ -404,7 +409,7 @@ def run_checks(reach_layer, cent_layer, conf_layer):
     ])
     if not ok:
         results.append(('warn', 'Skipping topology checks — fix missing fields first.'))
-        return results
+        return results, error_reach_ids, error_node_ids
 
     reach_crs = reach_layer.crs()
     nodes = []
@@ -475,17 +480,20 @@ def run_checks(reach_layer, cent_layer, conf_layer):
     if mismatches:
         for found, expected in mismatches:
             results.append(('fail', f'Reach "{found}": expected "{expected}"'))
+            error_reach_ids.add(found)
     else:
         results.append(('pass', 'All reach IDs match their connected nodes'))
 
     if unmatched:
         results.append(('warn',
             f'{len(unmatched)} reach(es) had no matching node endpoint: {unmatched}'))
+        error_reach_ids.update(unmatched)
 
     isolated = [nid for nid, _ in nodes if not pt_line_map[nid]]
     if isolated:
         for nid in isolated:
             results.append(('fail', f'Node "{nid}": not connected to any reach'))
+        error_node_ids.update(isolated)
     else:
         results.append(('pass', f'All {len(nodes)} node(s) connect to at least one reach'))
 
@@ -499,6 +507,7 @@ def run_checks(reach_layer, cent_layer, conf_layer):
 
     if neg:
         results.append(('warn', f'{len(neg)} reach(es) have negative slope: {neg}'))
+        error_reach_ids.update(neg)
     else:
         results.append(('pass', 'No negative slope values found'))
 
@@ -514,5 +523,6 @@ def run_checks(reach_layer, cent_layer, conf_layer):
         results.append(('fail',
             f'{len(outlets)} outlet nodes found — must be exactly 1: '
             f'{sorted(outlets)}'))
+        error_node_ids.update(outlets)
 
-    return results
+    return results, error_reach_ids, error_node_ids

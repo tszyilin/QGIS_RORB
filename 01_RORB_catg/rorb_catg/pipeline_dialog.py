@@ -291,9 +291,39 @@ class RorbPipelineDialog(QWidget):
 
         # ── 5. Checks ────────────────────────────────────────────────────────
         self._log('info', '─── Running link checks ───')
-        self._check_results = run_checks(named_reaches, named_cents, named_confs)
+        self._check_results, err_reach_ids, err_node_ids = run_checks(
+            named_reaches, named_cents, named_confs)
         for status, msg in self._check_results:
             self._log(status, msg)
+
+        # Select error features in the map so the user can see them immediately
+        named_reaches.removeSelection()
+        named_cents.removeSelection()
+        named_confs.removeSelection()
+
+        if err_reach_ids:
+            parts = []
+            no_id = '' in err_reach_ids or None in err_reach_ids
+            named_ids = {i for i in err_reach_ids if i and i != 'None'}
+            if named_ids:
+                quoted = ', '.join(f"'{i}'" for i in sorted(named_ids))
+                parts.append(f'"id" IN ({quoted})')
+            if no_id:
+                parts.append('"id" IS NULL OR "id" = \'\'')
+            if parts:
+                named_reaches.selectByExpression(' OR '.join(f'({p})' for p in parts))
+            n = named_reaches.selectedFeatureCount()
+            if n:
+                self._log('warn', f'{n} error reach(es) selected in map (shown in yellow)')
+
+        if err_node_ids:
+            quoted = ', '.join(f"'{i}'" for i in sorted(err_node_ids))
+            expr = f'"id" IN ({quoted})'
+            named_cents.selectByExpression(expr)
+            named_confs.selectByExpression(expr)
+            n = named_cents.selectedFeatureCount() + named_confs.selectedFeatureCount()
+            if n:
+                self._log('warn', f'{n} error node(s) selected in map (shown in yellow)')
 
         n_fail = sum(1 for s, _ in self._check_results if s == 'fail')
         n_warn = sum(1 for s, _ in self._check_results if s == 'warn')
