@@ -83,10 +83,13 @@ class RorbSuitePlugin:
     def _show_viewer(self):
         from .rorb_qgis.results_dialog import RorbResultsDialog
         from .rorb_qgis.compat import RightDockWidgetArea
+        from qgis.PyQt.QtCore import QTimer
         if self._results_dialog is None:
             self._results_dialog = RorbResultsDialog(self.iface.mainWindow())
             self.iface.addDockWidget(RightDockWidgetArea, self._results_dialog)
-            self._results_dialog.setFloating(True)
+            # Defer setFloating to avoid a segfault on QGIS 3.38+ / newer Qt builds
+            # where calling setFloating immediately after addDockWidget crashes.
+            QTimer.singleShot(0, lambda: self._results_dialog.setFloating(True))
         self._results_dialog.show()
         self._results_dialog.raise_()
 
