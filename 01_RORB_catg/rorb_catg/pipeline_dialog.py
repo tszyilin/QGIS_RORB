@@ -83,7 +83,7 @@ class RorbPipelineDialog(QWidget):
 
         _left = QWidget()
         root = QVBoxLayout(_left)
-        root.setSpacing(10)
+        root.setSpacing(6)
         outer.addWidget(_left, 1)
 
         # ── Step 1: layers ───────────────────────────────────────────────────
@@ -139,8 +139,8 @@ class RorbPipelineDialog(QWidget):
 
         self.txt_log = QTextEdit()
         self.txt_log.setReadOnly(True)
-        self.txt_log.setMinimumHeight(100)
-        self.txt_log.setMaximumHeight(160)
+        self.txt_log.setMinimumHeight(80)
+        self.txt_log.setMaximumHeight(120)
         self.txt_log.setPlaceholderText('Pipeline output will appear here…')
         self.txt_log.setFont(QFont('Consolas', 9))
         log_col.addWidget(self.txt_log)
@@ -158,7 +158,7 @@ class RorbPipelineDialog(QWidget):
         side.setFixedWidth(138)
         sv = QVBoxLayout(side)
         sv.setSpacing(2)
-        sv.setContentsMargins(6, 6, 6, 6)
+        sv.setContentsMargins(6, 4, 6, 4)
 
         _t = QLabel('<b>Stats</b>')
         _t.setAlignment(ALIGN_CENTER)
@@ -171,35 +171,21 @@ class RorbPipelineDialog(QWidget):
             sv.addWidget(s)
 
         def _stat(label):
-            lbl = QLabel(label)
-            lbl.setStyleSheet('font-size:8pt; color:#666;')
-            sv.addWidget(lbl)
-            val = QLabel('—')
-            val.setAlignment(ALIGN_CENTER)
-            val.setStyleSheet('font-size:11pt; font-weight:bold; color:#333;')
+            val = QLabel(f'{label}: —')
+            val.setStyleSheet('font-size:9pt; font-weight:bold; color:#333;')
             sv.addWidget(val)
             return val
 
         _hsep()
-        self._stat_subs  = _stat('Sub-catchments')
-        self._stat_jun   = _stat('Junctions')
-        self._stat_cen   = _stat('Centroids')
+        self._stat_subs  = _stat('Sub-catchment')
+        self._stat_jun   = _stat('Junction')
+        self._stat_cen   = _stat('Centroid')
         self._stat_rch   = _stat('Reaches')
         _hsep()
         self._stat_euler = QLabel('—')
-        self._stat_euler.setAlignment(ALIGN_CENTER)
         self._stat_euler.setWordWrap(True)
         self._stat_euler.setStyleSheet('font-size:8pt; color:#333;')
         sv.addWidget(self._stat_euler)
-        _hsep()
-        _pn = QLabel('Print nodes')
-        _pn.setStyleSheet('font-size:8pt; color:#666;')
-        sv.addWidget(_pn)
-        self._stat_print = QLabel('—')
-        self._stat_print.setWordWrap(True)
-        self._stat_print.setAlignment(ALIGN_CENTER)
-        self._stat_print.setStyleSheet('font-size:8pt; color:#333;')
-        sv.addWidget(self._stat_print)
         sv.addStretch()
 
         h_body.addWidget(side)
@@ -209,16 +195,18 @@ class RorbPipelineDialog(QWidget):
         # ── Print node settings (right panel, hidden until pipeline runs) ───────
         self._grp_print = QGroupBox('Print Node Settings')
         self._grp_print.setVisible(False)
-        self._grp_print.setFixedWidth(280)
+        self._grp_print.setFixedWidth(420)
         vlay_p = QVBoxLayout(self._grp_print)
 
-        self.tbl_print = QTableWidget(0, 3)
-        self.tbl_print.setHorizontalHeaderLabels(['Node', 'Print?', 'Code'])
+        self.tbl_print = QTableWidget(0, 4)
+        self.tbl_print.setHorizontalHeaderLabels(['Node', 'Print?', 'Code', 'Location Name'])
         self.tbl_print.setSelectionMode(QTableWidget.NoSelection)
         hdr = self.tbl_print.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(0, QHeaderView.Fixed)
         hdr.setSectionResizeMode(1, QHeaderView.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(3, QHeaderView.Stretch)
+        self.tbl_print.setColumnWidth(0, 68)
         self.tbl_print.setColumnWidth(1, 55)
         self.tbl_print.setColumnWidth(2, 68)
         vlay_p.addWidget(self.tbl_print, 1)
@@ -410,9 +398,11 @@ class RorbPipelineDialog(QWidget):
         self._clear_error_highlights()
         self._grp_print.setVisible(False)
         self.tbl_print.setRowCount(0)
-        for _lbl in (self._stat_subs, self._stat_jun, self._stat_cen,
-                     self._stat_rch, self._stat_euler, self._stat_print):
-            _lbl.setText('—')
+        self._stat_subs.setText('Sub-catchment: —')
+        self._stat_jun.setText('Junction: —')
+        self._stat_cen.setText('Centroid: —')
+        self._stat_rch.setText('Reaches: —')
+        self._stat_euler.setText('—')
 
         try:
             self._run_pipeline(sub, cent, conf, reach, folder, prefix, use_temp)
@@ -519,6 +509,7 @@ class RorbPipelineDialog(QWidget):
         has_pn  = 'print_node'  in field_names
         has_pc  = 'print_code'  in field_names
         has_out = 'out'         in field_names
+        has_nm  = 'node_name'   in field_names
 
         feats = sorted(named_confs.getFeatures(),
                        key=lambda f: str(f['id']) if f['id'] else '')
@@ -527,13 +518,13 @@ class RorbPipelineDialog(QWidget):
             row = self.tbl_print.rowCount()
             self.tbl_print.insertRow(row)
 
-            node_id = str(feat['id']) if feat['id'] else '?'
-            is_out  = bool(int(feat['out'] or 0)) if (has_out and feat['out'] is not None) else False
-            label   = f'{node_id}  [outlet]' if is_out else node_id
+            node_attr = str(feat['id']) if feat['id'] else '?'
+            is_out    = bool(int(feat['out'] or 0)) if (has_out and feat['out'] is not None) else False
+            label     = f'{node_attr}  [outlet]' if is_out else node_attr
 
             item = QTableWidgetItem(label)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            item.setData(Qt.UserRole, node_id)
+            item.setData(Qt.UserRole, feat.id())   # store internal QGIS fid (int)
             self.tbl_print.setItem(row, 0, item)
 
             chk = QCheckBox()
@@ -547,10 +538,18 @@ class RorbPipelineDialog(QWidget):
             cmb.setCurrentIndex(idx if idx >= 0 else 0)
             cmb.setEnabled(chk.isChecked())
 
-            chk.stateChanged.connect(lambda state, c=cmb: c.setEnabled(bool(state)))
+            txt_nm = QLineEdit()
+            nm = str(feat['node_name']) if (has_nm and feat['node_name']) else ''
+            txt_nm.setText(nm)
+            txt_nm.setPlaceholderText('e.g. Site gauging station')
+            txt_nm.setEnabled(chk.isChecked())
+
+            chk.stateChanged.connect(lambda state, c=cmb, t=txt_nm: (
+                c.setEnabled(bool(state)), t.setEnabled(bool(state))))
 
             self.tbl_print.setCellWidget(row, 1, chk)
             self.tbl_print.setCellWidget(row, 2, cmb)
+            self.tbl_print.setCellWidget(row, 3, txt_nm)
 
         self._grp_print.setVisible(True)
 
@@ -561,40 +560,42 @@ class RorbPipelineDialog(QWidget):
         fields = layer.fields()
         pn_idx = fields.indexFromName('print_node')
         pc_idx = fields.indexFromName('print_code')
+        nm_idx = fields.indexFromName('node_name')
         if pn_idx < 0 or pc_idx < 0:
             QMessageBox.warning(self, 'Missing fields',
                                 'Confluence layer is missing print_node / print_code fields.')
             return
 
-        id_to_fid = {str(f['id']): f.id() for f in layer.getFeatures()}
         layer.startEditing()
         for row in range(self.tbl_print.rowCount()):
-            node_id = self.tbl_print.item(row, 0).data(Qt.UserRole)
-            chk     = self.tbl_print.cellWidget(row, 1)
-            cmb     = self.tbl_print.cellWidget(row, 2)
-            pn      = 1 if chk.isChecked() else 0
-            pc      = cmb.currentText() if chk.isChecked() else ''
-            fid     = id_to_fid.get(node_id)
-            if fid is not None:
-                layer.changeAttributeValue(fid, pn_idx, pn)
-                layer.changeAttributeValue(fid, pc_idx, pc)
+            fid    = self.tbl_print.item(row, 0).data(Qt.UserRole)  # internal QGIS fid
+            chk    = self.tbl_print.cellWidget(row, 1)
+            cmb    = self.tbl_print.cellWidget(row, 2)
+            txt_nm = self.tbl_print.cellWidget(row, 3)
+            pn     = 1 if chk.isChecked() else 0
+            pc     = cmb.currentText() if chk.isChecked() else ''
+            nm     = txt_nm.text().strip() if (txt_nm and chk.isChecked()) else ''
+            layer.changeAttributeValue(fid, pn_idx, pn)
+            layer.changeAttributeValue(fid, pc_idx, pc)
+            if nm_idx >= 0:
+                layer.changeAttributeValue(fid, nm_idx, nm)
         layer.commitChanges()
         layer.triggerRepaint()
         self._log('pass', 'Print settings applied to confluence layer')
 
     def _update_sidebar(self, n_subs, n_cents, n_confs, n_rch, named_confs):
         # Sub-catchments with range colour
-        self._stat_subs.setText(str(n_subs))
+        self._stat_subs.setText(f'Sub-catchment: {n_subs}')
         if 4 <= n_subs <= 30:
             self._stat_subs.setStyleSheet(
-                'font-size:11pt; font-weight:bold; color:#1a7a1a;')
+                'font-size:9pt; font-weight:bold; color:#1a7a1a;')
         else:
             self._stat_subs.setStyleSheet(
-                'font-size:11pt; font-weight:bold; color:#d68910;')
+                'font-size:9pt; font-weight:bold; color:#d68910;')
 
-        self._stat_jun.setText(str(n_confs))
-        self._stat_cen.setText(str(n_cents))
-        self._stat_rch.setText(str(n_rch))
+        self._stat_jun.setText(f'Junction: {n_confs}')
+        self._stat_cen.setText(f'Centroid: {n_cents}')
+        self._stat_rch.setText(f'Reaches: {n_rch}')
 
         # Euler check
         lhs, rhs = n_confs + n_cents, n_rch + 1
@@ -608,24 +609,6 @@ class RorbPipelineDialog(QWidget):
             self._stat_euler.setText(f'✗ {abs(diff)} {word}')
             self._stat_euler.setStyleSheet(
                 'font-size:8pt; font-weight:bold; color:#c0392b;')
-
-        # Print nodes
-        field_names = {f.name() for f in named_confs.fields()}
-        print_nodes = []
-        if 'print_node' in field_names and 'print_code' in field_names:
-            for feat in named_confs.getFeatures():
-                try:
-                    if int(feat['print_node'] or 0) == 1:
-                        pc = str(feat['print_code']) if feat['print_code'] else '7'
-                        print_nodes.append(f"{feat['id']} ({pc})")
-                except (ValueError, TypeError):
-                    pass
-        if print_nodes:
-            self._stat_print.setText('\n'.join(print_nodes))
-            self._stat_print.setStyleSheet('font-size:8pt; color:#1a7a1a;')
-        else:
-            self._stat_print.setText('none set')
-            self._stat_print.setStyleSheet('font-size:8pt; color:#d68910;')
 
     # ── Build ─────────────────────────────────────────────────────────────────
 

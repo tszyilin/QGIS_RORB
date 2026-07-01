@@ -346,8 +346,14 @@ class GraphicsBlock():
         for row in self._nodeVector:
             nodeStr += resources.rorb.LEADING_TOKEN
             for item in row:
+                if item == 'location_name':
+                    continue
                 nodeStr += f"{row[item]:{self._formattingOptions['node'][item]}}"
-            nodeStr += f"\n{resources.rorb.LEADING_TOKEN}\n"
+            loc_name = row.get('location_name', '')
+            if loc_name:
+                nodeStr += f"\n{resources.rorb.LEADING_TOKEN} {loc_name}\n"
+            else:
+                nodeStr += f"\n{resources.rorb.LEADING_TOKEN}\n"
 
         return nodeStr
 
@@ -400,6 +406,8 @@ class GraphicsBlock():
             ds_node = traveller.getNode(traveller.down(pos))
             ds_name = f"<{ds_node.name}>"
 
+            loc_name = node.node_name if isinstance(node, Confluence) and node.node_name else ""
+
             # Order according to the column order in the control vector.
             data = {
                 'id': f"<{node.name}>",
@@ -414,7 +422,8 @@ class GraphicsBlock():
                 'fi': node.fi if isinstance(node, Basin) else 0,
                 'print': prnt,
                 'excess': 0,
-                'comment': 0
+                'comment': 0,
+                'location_name': loc_name
             }
 
             self._idMap[data['id']] = next(self._nodeID)

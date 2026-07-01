@@ -85,15 +85,22 @@ class Builder:
         list
             A list of confluence objects.
         """
+        def _str_field(rec, key, names):
+            if key not in names or not rec[key]:
+                return ''
+            val = str(rec[key]).strip()
+            return '' if val.upper() == 'NULL' else val
+
         confluences = []
         for i in range(len(confluence)):
             s = confluence.geometry(i)
             p = s[0]
             r = confluence.record(i)
             field_names = {f.name() for f in r.fields()}
-            pn = (r['print_node'] if r['print_node'] is not None else None) if 'print_node' in field_names else None
-            pc_raw = (str(r['print_code']) if r['print_code'] is not None else '') if 'print_code' in field_names else ''
-            nm_raw = (str(r['node_name']) if r['node_name'] is not None else '') if 'node_name' in field_names else ''
+            pn = (r['print_node'] if r['print_node'] else None) if 'print_node' in field_names else None
+            pc_raw = _str_field(r, 'print_code', field_names)
+            nm_raw = _str_field(r, 'node_name', field_names)
             pc = pc_raw if (pn is None or int(pn or 0) == 1) else ''
-            confluences.append(Confluence(r['id'], p[0], p[1], bool(r['out']), pc, nm_raw))
+            id_val = _str_field(r, 'id', field_names)
+            confluences.append(Confluence(id_val, p[0], p[1], bool(r['out']), pc, nm_raw))
         return confluences

@@ -5,7 +5,7 @@ name=QGIS RORB
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
-version=1.1
+version=1.2
 author=Tom Norman
 email=tom@ncos.com.au
 
@@ -33,6 +33,9 @@ repository=https://github.com/norman-tom/runoff-model
 hasProcessingProvider=yes
 
 changelog=
+v1.2: Fix print-node location names being dropped (and stray "NULL" text)
+    when building .catg files; shorten the Build .catg pipeline dialog and
+    simplify its stats sidebar.
 v1.1: Add "Run RORB" dialog — runs RORB_CMD.exe against a .catg/.stm pair
     with per-interstation-area kc/m/IL/CL, and hands the .out file off to
     the Results Viewer. Bundle pyromb so users no longer need to pip

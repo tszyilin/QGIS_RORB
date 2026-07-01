@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.7
+version=2.8
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,10 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.8: Build .catg: fix print-node location names being dropped (and stray
+    "NULL" text appearing) when writing .catg files; pipeline dialog is
+    shorter and the stats sidebar shows compact single-line counts
+    (Sub-catchment/Junction/Centroid/Reaches) instead of the print-node list.
 v2.7: Build .catg: confluence layer template gains print_node/print_code fields; Print Node Settings panel lets you assign print codes (7/7.1/7.2) interactively and write them back to the layer; stats sidebar shows feature counts after pipeline runs; pyromb now writes print instructions into the control vector at marked confluences. Run RORB: fix ISA table row names in non-lumped mode.
 v2.6: Results Viewer: hydrograph viewer highlights the representative TP for the selected duration (not always the critical duration's TP); duration combo label shows actual critical duration (e.g. "Critical (6 hr)") instead of "Critical (auto)".
 v2.5: Fix SyntaxError on QGIS 3.28 (Python 3.9) — replace match/case statements in bundled pyromb vendor code with equivalent if/elif chains.
