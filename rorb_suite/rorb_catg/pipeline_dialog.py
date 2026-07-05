@@ -4,6 +4,7 @@ __author__ = 'Tom Norman'
 __date__ = '2023-06-15'
 __copyright__ = '(C) 2025 by Tom Norman'
 
+import gc
 import os
 import shutil
 import tempfile
@@ -18,7 +19,7 @@ from qgis.PyQt.QtGui import QFont, QColor
 
 from qgis.gui import QgsMapLayerComboBox, QgsHighlight
 from qgis.core import (
-    QgsProject, QgsDistanceArea, QgsUnitTypes,
+    QgsProject, QgsDistanceArea, QgsUnitTypes, QgsVectorLayer,
     QgsPalLayerSettings, QgsTextFormat, QgsTextBufferSettings,
     QgsVectorLayerSimpleLabeling,
 )
@@ -28,6 +29,8 @@ from .compat import (ALIGN_RIGHT, ALIGN_CENTER,
 from .pipeline_utils import (
     name_subcatchments, name_centroids, name_confluences,
     name_reaches, run_checks,
+    layer_file_path, is_rewritable_shapefile, replace_shapefile,
+    _id_to_uppercase,
 )
 from .custom_types.qvector_layer import QVectorLayer
 
@@ -57,6 +60,7 @@ class RorbPipelineDialog(QWidget):
         self._check_results    = []
         self._error_highlights = []   # QgsHighlight objects — kept alive here
         self._tmp_dir          = None
+        self._tmp_dir_rewrite  = None
         self._run_dialog       = None
         self._setup_ui()
 
@@ -69,6 +73,9 @@ class RorbPipelineDialog(QWidget):
         if self._tmp_dir and os.path.isdir(self._tmp_dir):
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
             self._tmp_dir = None
+        if self._tmp_dir_rewrite and os.path.isdir(self._tmp_dir_rewrite):
+            shutil.rmtree(self._tmp_dir_rewrite, ignore_errors=True)
+            self._tmp_dir_rewrite = None
 
     # ── UI ───────────────────────────────────────────────────────────────────
 
@@ -102,32 +109,59 @@ class RorbPipelineDialog(QWidget):
         form1.addRow('Reach (line):', self.cmb_reach)
         root.addWidget(grp1)
 
-        # ── Step 2: optional output folder ───────────────────────────────────
-        grp2 = QGroupBox('Step 2 — Output Folder  (leave empty to save as temporary layers)')
+        # ── Step 2: output mode ───────────────────────────────────────────────
+        grp2 = QGroupBox('Step 2 — Output Mode')
         form2 = QFormLayout(grp2)
         form2.setLabelAlignment(ALIGN_RIGHT)
 
-        folder_row = QHBoxLayout()
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems([
+            'Rewrite input files (overwrite originals)',
+            'Export to folder',
+            'Temporary layer',
+        ])
+        self.cmb_mode.setCurrentIndex(2)   # default: temporary layer
+        self.cmb_mode.currentIndexChanged.connect(self._on_mode_changed)
+        form2.addRow('Mode:', self.cmb_mode)
+
+        self._row_folder = QWidget()
+        folder_row = QHBoxLayout(self._row_folder)
+        folder_row.setContentsMargins(0, 0, 0, 0)
         self.txt_folder = QLineEdit()
-        self.txt_folder.setPlaceholderText('Leave empty for temporary layers…')
+        self.txt_folder.setPlaceholderText('Select an output folder…')
         folder_row.addWidget(self.txt_folder)
         btn_folder = QPushButton('Browse…'); btn_folder.setFixedWidth(80)
         btn_folder.clicked.connect(self._browse_folder)
         folder_row.addWidget(btn_folder)
-        form2.addRow('Output folder:', folder_row)
+        form2.addRow('Output folder:', self._row_folder)
 
+        self._row_prefix = QWidget()
+        prefix_row = QHBoxLayout(self._row_prefix)
+        prefix_row.setContentsMargins(0, 0, 0, 0)
         self.txt_prefix = QLineEdit('rorb')
-        form2.addRow('File prefix:', self.txt_prefix)
+        prefix_row.addWidget(self.txt_prefix)
+        form2.addRow('File prefix:', self._row_prefix)
+
         root.addWidget(grp2)
+        self._on_mode_changed(self.cmb_mode.currentIndex())
 
         # ── Step 3: run pipeline ─────────────────────────────────────────────
         grp3 = QGroupBox('Step 3 — Run Pipeline  (Name → Save → Check)')
         vlay3 = QVBoxLayout(grp3)
 
+        btn_row = QHBoxLayout()
         self.btn_run = QPushButton('Run Pipeline')
         self.btn_run.setFixedHeight(34)
         self.btn_run.clicked.connect(self._on_run)
-        vlay3.addWidget(self.btn_run)
+        btn_row.addWidget(self.btn_run, 1)
+
+        self.btn_clear_hl = QPushButton('Clear Highlights')
+        self.btn_clear_hl.setFixedHeight(34)
+        self.btn_clear_hl.setToolTip('Remove the red error circles from the map canvas')
+        self.btn_clear_hl.setEnabled(False)
+        self.btn_clear_hl.clicked.connect(self._on_clear_highlights)
+        btn_row.addWidget(self.btn_clear_hl)
+        vlay3.addLayout(btn_row)
 
         # Horizontal body: log (left, stretches) | stats sidebar (right, fixed)
         h_body = QHBoxLayout()
@@ -274,6 +308,10 @@ class RorbPipelineDialog(QWidget):
 
     # ── Browse helpers ────────────────────────────────────────────────────────
 
+    def _on_mode_changed(self, index):
+        self._row_folder.setVisible(index == 1)      # Export to folder
+        self._row_prefix.setVisible(index != 0)       # not needed when rewriting
+
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, 'Select output folder')
         if folder:
@@ -300,6 +338,10 @@ class RorbPipelineDialog(QWidget):
             del h
         self._error_highlights.clear()
 
+    def _on_clear_highlights(self):
+        self._clear_error_highlights()
+        self.btn_clear_hl.setEnabled(False)
+
     def _highlight_errors(self, layer, error_ids):
         """
         Draw red thick QgsHighlight on each feature whose 'id' is in error_ids,
@@ -324,6 +366,7 @@ class RorbPipelineDialog(QWidget):
 
         if not count:
             return 0
+        self.btn_clear_hl.setEnabled(True)
 
         # Build label filter expression for these features
         parts = []
@@ -380,14 +423,50 @@ class RorbPipelineDialog(QWidget):
                                 'Please select all four input layers.')
             return
 
+        mode = self.cmb_mode.currentIndex()   # 0=rewrite, 1=export, 2=temporary
+
         folder = self.txt_folder.text().strip()
-        if folder and not os.path.isdir(folder):
-            QMessageBox.warning(self, 'Invalid folder',
-                                'The specified output folder does not exist.')
-            return
+        if mode == 1:
+            if not folder or not os.path.isdir(folder):
+                QMessageBox.warning(self, 'Invalid folder',
+                                    'Please select a valid output folder.')
+                return
+        elif mode == 0:
+            bad = [label for layer, label in (
+                        (sub, 'Subcatchment'), (cent, 'Centroid'),
+                        (conf, 'Confluence'), (reach, 'Reach'))
+                   if not is_rewritable_shapefile(layer)]
+            if bad:
+                QMessageBox.warning(
+                    self, 'Cannot rewrite input files',
+                    'The following input layer(s) are not shapefiles on disk, '
+                    'so they cannot be overwritten in place:\n\n'
+                    + '\n'.join(bad)
+                    + '\n\nChoose "Export to folder" or "Temporary layer" instead.')
+                return
+            # Detect duplicate file paths — rewriting the same file for two
+            # different inputs would corrupt the first step's output.
+            _paths = {
+                'Centroid':   layer_file_path(cent),
+                'Confluence': layer_file_path(conf),
+                'Reach':      layer_file_path(reach),
+            }
+            _seen_paths, _dups = {}, []
+            for label, path in _paths.items():
+                if path in _seen_paths:
+                    _dups.append(f'{_seen_paths[path]} and {label} point to the same file')
+                _seen_paths[path] = label
+            if _dups:
+                QMessageBox.warning(
+                    self, 'Duplicate input files',
+                    'Rewrite mode cannot be used when two inputs share the same file — '
+                    'the second write would overwrite the first:\n\n'
+                    + '\n'.join(_dups)
+                    + '\n\nAssign separate layers for each input, or switch to '
+                    '"Export to folder" / "Temporary layer".')
+                return
 
         prefix = self.txt_prefix.text().strip() or 'rorb'
-        use_temp = not folder
 
         self.btn_run.setEnabled(False)
         self.btn_build.setEnabled(False)
@@ -396,6 +475,7 @@ class RorbPipelineDialog(QWidget):
         self.lbl_status.setText('')
         self._named_cents = self._named_confs = self._named_reaches = self._named_basins = None
         self._clear_error_highlights()
+        self.btn_clear_hl.setEnabled(False)
         self._grp_print.setVisible(False)
         self.tbl_print.setRowCount(0)
         self._stat_subs.setText('Sub-catchment: —')
@@ -405,7 +485,7 @@ class RorbPipelineDialog(QWidget):
         self._stat_euler.setText('—')
 
         try:
-            self._run_pipeline(sub, cent, conf, reach, folder, prefix, use_temp)
+            self._run_pipeline(sub, cent, conf, reach, mode, folder, prefix)
         except Exception as e:
             self._log('fail', f'Pipeline error: {e}')
             self.lbl_status.setText('Pipeline failed')
@@ -413,40 +493,125 @@ class RorbPipelineDialog(QWidget):
         finally:
             self.btn_run.setEnabled(True)
 
-    def _run_pipeline(self, sub, cent, conf, reach, folder, prefix, use_temp):
+    def _run_pipeline(self, sub, cent, conf, reach, mode, folder, prefix):
+        use_temp = (mode == 2)
+        rewrite  = (mode == 0)
+
+        # Snapshot paths/names NOW before any _finalise() can removeMapLayer()
+        # and invalidate the C++ object (happens when the same layer is selected
+        # for two inputs, e.g. centroid == confluence).
+        _src_path = {id(lyr): layer_file_path(lyr) for lyr in (sub, cent, conf, reach)}
+        _src_name = {id(lyr): lyr.name()            for lyr in (sub, cent, conf, reach)}
+
+        _styles = os.path.join(os.path.dirname(__file__), 'styles')
+
+        def _apply_style(layer, qml_name):
+            qml = os.path.join(_styles, qml_name)
+            if layer and os.path.isfile(qml):
+                layer.loadNamedStyle(qml)
+                layer.triggerRepaint()
+
         # Resolve working directory
-        if use_temp:
+        if rewrite:
+            self._cleanup_tmp()
+            work_dir = tempfile.mkdtemp(prefix='rorb_pipeline_')
+            self._tmp_dir_rewrite = work_dir
+        elif use_temp:
             self._cleanup_tmp()
             work_dir = tempfile.mkdtemp(prefix='rorb_pipeline_')
             self._tmp_dir = work_dir
         else:
             work_dir = folder
 
-        p = lambda name: os.path.join(work_dir, f'{prefix}_{name}.shp')
+        if rewrite:
+            p = lambda name, src: os.path.join(work_dir, f'{name}.shp')
+        else:
+            p = lambda name, src: os.path.join(work_dir, f'{prefix}_{name}.shp')
+
+        def _reader(layer):
+            """For rewrite mode: read via a standalone (never project-added)
+            copy of the layer rather than the original itself. QGIS's OGR
+            connection pool keeps a file handle open for project-registered
+            layers that have had getFeatures() called on them, even after
+            removeMapLayer() — reading through an unregistered copy avoids
+            that so the file can be overwritten immediately afterwards.
+            Uses the pre-snapshotted path so this is safe even when the same
+            layer was selected for two inputs and has already been removed."""
+            if not rewrite:
+                return layer
+            path = _src_path[id(layer)]
+            reader = QgsVectorLayer(path, 'reader', 'ogr')
+            if not reader.isValid():
+                raise RuntimeError(f'Could not re-open layer for reading: {path}')
+            return reader
+
+        def _finalise(layer, source_layer, name):
+            """For rewrite mode: replace the original file in place and swap
+            the project's layer for a freshly-loaded one with the same name.
+            Guards against duplicate-layer selection: if source_layer was
+            already removed in a prior step, skip the second removeMapLayer."""
+            if not rewrite:
+                QgsProject.instance().addMapLayer(layer, True)
+                return layer
+            final_path = _src_path[id(source_layer)]
+            orig_name  = _src_name[id(source_layer)]
+            tmp_path   = layer.source().split('|')[0]
+            if QgsProject.instance().mapLayer(source_layer.id()):
+                QgsProject.instance().removeMapLayer(source_layer.id())
+            gc.collect()
+            replace_shapefile(tmp_path, final_path)
+            fresh = QgsVectorLayer(final_path, orig_name, 'ogr')
+            if not fresh.isValid():
+                raise RuntimeError(f'Rewritten shapefile is not valid: {final_path}')
+            QgsProject.instance().addMapLayer(fresh, True)
+            return fresh
 
         # ── 1. Name subcatchments ────────────────────────────────────────────
-        named_subs = name_subcatchments(sub, p('subs'))
-        QgsProject.instance().addMapLayer(named_subs, not use_temp)
+        reader = _reader(sub)
+        named_subs = name_subcatchments(reader, p('subs', sub))
+        reader = None
+        gc.collect()
+        named_subs = _finalise(named_subs, sub, 'subs')
+        _apply_style(named_subs, 'sub-catchment_check.qml')
         n_subs = named_subs.featureCount()
         self._named_basins = named_subs
 
         # ── 2. Name centroids ────────────────────────────────────────────────
-        named_cents = name_centroids(named_subs, cent, p('centroids'))
-        QgsProject.instance().addMapLayer(named_cents, not use_temp)
+        reader = _reader(cent)
+        named_cents = name_centroids(named_subs, reader, p('centroids', cent))
+        reader = None
+        gc.collect()
+        named_cents = _finalise(named_cents, cent, 'centroids')
+        _apply_style(named_cents, 'centroid_check.qml')
         self._named_cents = named_cents
 
         # ── 3. Name confluences ──────────────────────────────────────────────
-        named_confs = name_confluences(conf, p('confluences'))
-        QgsProject.instance().addMapLayer(named_confs, not use_temp)
+        reader = _reader(conf)
+        named_confs = name_confluences(reader, p('confluences', conf))
+        reader = None
+        gc.collect()
+        named_confs = _finalise(named_confs, conf, 'confluences')
+        _apply_style(named_confs, 'confluence_check.qml')
         self._named_confs = named_confs
         self._populate_print_table(named_confs)
 
         # ── 4. Name reaches ──────────────────────────────────────────────────
-        named_reaches, unnamed = name_reaches(named_cents, named_confs, reach, p('reaches'))
-        QgsProject.instance().addMapLayer(named_reaches, not use_temp)
+        reader = _reader(reach)
+        named_reaches, unnamed = name_reaches(named_cents, named_confs, reader, p('reaches', reach))
+        reader = None
+        gc.collect()
+        named_reaches = _finalise(named_reaches, reach, 'reaches')
+        _apply_style(named_reaches, 'reaches.qml')
         self._named_reaches = named_reaches
 
-        dest = '(temporary)' if use_temp else folder
+        if rewrite:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            self._tmp_dir_rewrite = None
+            dest = '(input files rewritten in place)'
+        elif use_temp:
+            dest = '(temporary)'
+        else:
+            dest = folder
         self._log('pass', f'Layers named  →  {dest}')
         if unnamed:
             self._log('warn', f'{len(unnamed)} reach(es) could not be named (no nearby node)')
@@ -462,6 +627,20 @@ class RorbPipelineDialog(QWidget):
             if status in ('fail', 'warn'):
                 self._log(status, msg)
         # passes are summarised in the sidebar; only failures/warnings appear in the log
+
+        # Flag invalid confluence nodes with out=99 so confluence_check.qml
+        # renders them distinctively on the canvas.
+        if err_node_ids:
+            out_idx = named_confs.fields().indexFromName('out')
+            if out_idx >= 0:
+                flagged = [f.id() for f in named_confs.getFeatures()
+                           if str(f['id']) in err_node_ids]
+                if flagged:
+                    named_confs.startEditing()
+                    for fid in flagged:
+                        named_confs.changeAttributeValue(fid, out_idx, 99)
+                    named_confs.commitChanges()
+                    named_confs.triggerRepaint()
 
         # Update stats sidebar
         self._update_sidebar(n_subs, n_cents, n_confs, n_rch, named_confs)
@@ -495,7 +674,10 @@ class RorbPipelineDialog(QWidget):
         self.btn_build_catg.setEnabled(True)
 
         # Pre-fill .cat / .catg paths
-        out_dir = folder if folder else work_dir
+        if rewrite:
+            out_dir = os.path.dirname(_src_path[id(sub)])
+        else:
+            out_dir = folder if folder else work_dir
         if not self.txt_output.text().strip():
             self.txt_output.setText(os.path.join(out_dir, f'{prefix}.cat'))
         if not self.txt_output_catg.text().strip():
@@ -656,6 +838,26 @@ class RorbPipelineDialog(QWidget):
             tc = builder.confluence(conf_vec)
             tb = builder.basin(cent_vec, basin_vec)
 
+            # Replace pyromb's planar areas with QGIS ellipsoidal areas.
+            # Basin polygons have numeric id (1, 2, …); Basin objects are named
+            # with letter ids (A, B, …) derived from those numbers — convert to
+            # match.
+            da = QgsDistanceArea()
+            da.setSourceCrs(self._named_basins.crs(),
+                            QgsProject.instance().transformContext())
+            da.setEllipsoid(QgsProject.instance().ellipsoid())
+            ellipsoidal_area_km2 = {}
+            for feat in self._named_basins.getFeatures():
+                letter = _id_to_uppercase(feat['id'])
+                if letter:
+                    ellipsoidal_area_km2[letter] = da.convertAreaMeasurement(
+                        da.measureArea(feat.geometry()),
+                        QgsUnitTypes.AreaSquareKilometers
+                    )
+            for b in tb:
+                if b.name in ellipsoidal_area_km2:
+                    b.area = ellipsoidal_area_km2[b.name]
+
             catchment = pyromb.Catchment(tc, tb, tr)
             catchment.connect()
             traveller = pyromb.Traveller(catchment)
@@ -665,31 +867,16 @@ class RorbPipelineDialog(QWidget):
 
             total_area = sum(b.area for b in tb)
 
-            da = QgsDistanceArea()
-            da.setSourceCrs(self._named_basins.crs(),
-                            QgsProject.instance().transformContext())
-            da.setEllipsoid(QgsProject.instance().ellipsoid())
-            total_qgis = sum(
-                da.measureArea(feat.geometry())
-                for feat in self._named_basins.getFeatures()
-            )
-            total_qgis_km2 = da.convertAreaMeasurement(
-                total_qgis, QgsUnitTypes.AreaSquareKilometers
-            )
-
             self._log('pass', f'RORB {ext} written → {output}')
             self._log('info',
-                      f'Total catchment area — '
-                      f'pyromb planar: <b>{total_area:.4f} km²</b> | '
-                      f'QGIS ellipsoidal: <b>{total_qgis_km2:.4f} km²</b> '
-                      f'({len(tb)} sub-catchments)')
+                      f'Total catchment area (ellipsoidal): '
+                      f'<b>{total_area:.4f} km²</b> ({len(tb)} sub-catchments)')
             if ext == '.catg':
                 self.btn_run_rorb.setEnabled(True)
             QMessageBox.information(self, 'Build complete',
                                     f'RORB control file written to:\n{output}\n\n'
-                                    f'Total catchment area\n'
-                                    f'  pyromb planar:    {total_area:.4f} km²\n'
-                                    f'  QGIS ellipsoidal: {total_qgis_km2:.4f} km²')
+                                    f'Total catchment area (ellipsoidal): '
+                                    f'{total_area:.4f} km²')
         except Exception as e:
             QMessageBox.critical(self, 'Build failed',
                                  f'Error building {ext} file:\n\n{e}')

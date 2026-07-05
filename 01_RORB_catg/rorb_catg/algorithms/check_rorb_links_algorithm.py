@@ -4,6 +4,7 @@ __author__ = 'Tom Norman'
 __date__ = '2023-06-15'
 __copyright__ = '(C) 2025 by Tom Norman'
 
+import os
 from collections import defaultdict
 
 from qgis.PyQt.QtCore import QCoreApplication
@@ -11,6 +12,8 @@ from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterNumber,
+    QgsProcessingParameterVectorDestination,
+    QgsProcessingUtils,
     QgsFeature,
     QgsSpatialIndex,
     QgsCoordinateTransform,
@@ -18,16 +21,19 @@ from qgis.core import (
     QgsGeometry,
     QgsPointXY,
 )
-from ..compat import TYPE_POINT, TYPE_LINE
+from ..compat import FAST_INSERT, TYPE_POINT, TYPE_LINE
+
+_STYLES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'styles')
 
 
 class CheckRorbLinksAlgorithm(QgsProcessingAlgorithm):
     """Check that reach IDs match their connected node IDs, and report connectivity."""
 
-    IN_CENTROIDS = 'IN_CENTROIDS'
+    IN_CENTROIDS   = 'IN_CENTROIDS'
     IN_CONFLUENCES = 'IN_CONFLUENCES'
-    IN_REACHES = 'IN_REACHES'
-    TOLERANCE = 'TOLERANCE'
+    IN_REACHES     = 'IN_REACHES'
+    TOLERANCE      = 'TOLERANCE'
+    OUTPUT         = 'OUTPUT'
 
     def initAlgorithm(self, config):
         self.addParameter(
@@ -60,94 +66,83 @@ class CheckRorbLinksAlgorithm(QgsProcessingAlgorithm):
                 minValue=0.0
             )
         )
+        self.addParameter(
+            QgsProcessingParameterVectorDestination(
+                self.OUTPUT,
+                self.tr('Flagged confluences (out=99 for unconnected nodes)')
+            )
+        )
 
     def processAlgorithm(self, parameters, context, feedback):
-        cent_source = self.parameterAsSource(parameters, self.IN_CENTROIDS, context)
-        conf_source = self.parameterAsSource(parameters, self.IN_CONFLUENCES, context)
-        reach_source = self.parameterAsSource(parameters, self.IN_REACHES, context)
-        tolerance = self.parameterAsDouble(parameters, self.TOLERANCE, context)
+        cent_source  = self.parameterAsSource(parameters, self.IN_CENTROIDS,   context)
+        conf_source  = self.parameterAsSource(parameters, self.IN_CONFLUENCES, context)
+        reach_source = self.parameterAsSource(parameters, self.IN_REACHES,     context)
+        tolerance    = self.parameterAsDouble(parameters, self.TOLERANCE,      context)
 
         reach_crs = reach_source.sourceCrs()
 
-        # Load all nodes into a combined list, transforming to reach CRS
-        nodes = []  # list of (id_str, QgsGeometry)
+        # Load all nodes (centroids first, then confluences) transformed to reach CRS
+        nodes = []  # (id_str, geom, feat, is_confluence)
 
-        def load_nodes(node_source):
-            node_crs = node_source.sourceCrs()
-            transform = None
-            if node_crs != reach_crs:
-                transform = QgsCoordinateTransform(node_crs, reach_crs, QgsProject.instance())
-            for feat in node_source.getFeatures():
+        def load_nodes(source, is_conf):
+            xform = None
+            if source.sourceCrs() != reach_crs:
+                xform = QgsCoordinateTransform(
+                    source.sourceCrs(), reach_crs, QgsProject.instance())
+            for feat in source.getFeatures():
                 geom = feat.geometry()
-                if transform:
-                    geom.transform(transform)
-                nodes.append((str(feat['id']), geom, feat))
+                if xform:
+                    geom.transform(xform)
+                nodes.append((str(feat['id']), geom, feat, is_conf))
 
-        load_nodes(cent_source)
-        load_nodes(conf_source)
+        load_nodes(cent_source, False)
+        cent_count = len(nodes)
+        load_nodes(conf_source, True)
 
-        # Build spatial index
+        # Spatial index over all nodes
         nodes_index = QgsSpatialIndex()
-        for i, (node_id, geom, _) in enumerate(nodes):
-            f = QgsFeature()
-            f.setId(i)
-            f.setGeometry(geom)
+        for i, (_, geom, _, _) in enumerate(nodes):
+            f = QgsFeature(); f.setId(i); f.setGeometry(geom)
             nodes_index.insertFeature(f)
 
-        def find_nearest_point(point_geom):
-            candidate_ids = nodes_index.intersects(point_geom.boundingBox())
-            best = None
-            best_dist = float('inf')
-            for fid in candidate_ids:
-                node_id, node_geom, node_feat = nodes[fid]
-                dist = node_geom.distance(point_geom)
-                if dist <= tolerance and dist < best_dist:
-                    best_dist = dist
-                    best = (node_id, node_feat)
+        def nearest(pt_geom):
+            best, best_d = None, float('inf')
+            for fid in nodes_index.intersects(pt_geom.boundingBox()):
+                d = nodes[fid][1].distance(pt_geom)
+                if d <= tolerance and d < best_d:
+                    best_d, best = d, nodes[fid]
             return best
 
+        # Check reaches
         discrepancies = []
-        point_line_map = defaultdict(list)  # node_id → list of reach ids
+        point_line_map = defaultdict(list)   # node_id → reach ids connected
 
-        for reach_feat in reach_source.getFeatures():
-            geom = reach_feat.geometry()
-            line_id = str(reach_feat['id']) if reach_feat['id'] else ''
+        for feat in reach_source.getFeatures():
+            geom   = feat.geometry()
+            rid    = str(feat['id']) if feat['id'] else ''
+            poly   = (geom.asMultiPolyline()[0] if geom.isMultipart()
+                      else geom.asPolyline()) if not geom.isEmpty() else None
 
-            polyline = None
-            if not geom.isEmpty():
-                if geom.isMultipart():
-                    parts = geom.asMultiPolyline()
-                    if parts:
-                        polyline = parts[0]
-                else:
-                    polyline = geom.asPolyline()
-
-            if not polyline or len(polyline) < 2:
-                feedback.pushWarning(f'Could not get endpoints for reach "{line_id}"')
+            if not poly or len(poly) < 2:
+                feedback.pushWarning(f'Could not get endpoints for reach "{rid}"')
                 continue
 
-            start_geom = QgsGeometry.fromPointXY(QgsPointXY(polyline[0]))
-            end_geom = QgsGeometry.fromPointXY(QgsPointXY(polyline[-1]))
+            s_match = nearest(QgsGeometry.fromPointXY(QgsPointXY(poly[0])))
+            e_match = nearest(QgsGeometry.fromPointXY(QgsPointXY(poly[-1])))
 
-            start_match = find_nearest_point(start_geom)
-            end_match = find_nearest_point(end_geom)
-
-            if start_match is None or end_match is None:
-                feedback.pushInfo(f'Could not find matching node for reach "{line_id}"')
+            if s_match is None or e_match is None:
+                feedback.pushInfo(f'Could not find matching node for reach "{rid}"')
                 continue
 
-            start_id = start_match[0]
-            end_id = end_match[0]
-            expected_id = f'{start_id}_{end_id}'
-
-            if line_id != expected_id:
-                discrepancies.append((line_id, expected_id))
+            expected = f'{s_match[0]}_{e_match[0]}'
+            if rid != expected:
+                discrepancies.append((rid, expected))
                 feedback.pushInfo(
-                    f'ID mismatch — reach "{line_id}": found "{line_id}", expected "{expected_id}"'
+                    f'ID mismatch — reach "{rid}": found "{rid}", expected "{expected}"'
                 )
 
-            point_line_map[start_id].append(line_id)
-            point_line_map[end_id].append(line_id)
+            point_line_map[s_match[0]].append(rid)
+            point_line_map[e_match[0]].append(rid)
 
         if discrepancies:
             feedback.pushInfo(f'\n{len(discrepancies)} discrepancy(ies) found:')
@@ -156,33 +151,54 @@ class CheckRorbLinksAlgorithm(QgsProcessingAlgorithm):
         else:
             feedback.pushInfo('No discrepancies found. All reach id attributes are correct.')
 
-        # Connectivity check: every node should connect to at least one reach
-        feedback.pushInfo('\nChecking point-to-line connectivity...')
-
-        cent_count = cent_source.featureCount()
-        conf_count = conf_source.featureCount()
-        node_idx = 0
-
+        # Connectivity report
         feedback.pushInfo('\nCentroid nodes:')
-        for i, (node_id, geom, _) in enumerate(nodes[:cent_count]):
+        for node_id, _, _, _ in nodes[:cent_count]:
             connected = point_line_map[node_id]
             if connected:
-                feedback.pushInfo(
-                    f'  Node {node_id}: {len(connected)} line(s) — {connected}'
-                )
+                feedback.pushInfo(f'  Node {node_id}: {len(connected)} line(s) — {connected}')
             else:
                 feedback.pushWarning(f'  Node {node_id}: NO connected lines [FLAG]')
 
         feedback.pushInfo('\nConfluence nodes:')
-        for i, (node_id, geom, _) in enumerate(nodes[cent_count:]):
+        invalid_conf_ids = set()
+        for node_id, _, _, _ in nodes[cent_count:]:
             connected = point_line_map[node_id]
             if connected:
-                feedback.pushInfo(
-                    f'  Node {node_id}: {len(connected)} line(s) — {connected}'
-                )
+                feedback.pushInfo(f'  Node {node_id}: {len(connected)} line(s) — {connected}')
             else:
                 feedback.pushWarning(f'  Node {node_id}: NO connected lines [FLAG]')
+                invalid_conf_ids.add(node_id)
 
+        # Output flagged confluence layer (out=99 for unconnected nodes)
+        conf_fields = conf_source.fields()
+        (sink, dest_id) = self.parameterAsSink(
+            parameters, self.OUTPUT, context,
+            conf_fields, conf_source.wkbType(), conf_source.sourceCrs()
+        )
+        self._dest_id = dest_id
+
+        out_idx = conf_fields.indexFromName('out')
+        total   = conf_source.featureCount()
+        for i, feat in enumerate(conf_source.getFeatures()):
+            out_feat = QgsFeature(feat)
+            node_id  = str(feat['id'])
+            if node_id in invalid_conf_ids and out_idx >= 0:
+                attrs = out_feat.attributes()
+                attrs[out_idx] = 99
+                out_feat.setAttributes(attrs)
+            sink.addFeature(out_feat, FAST_INSERT)
+            feedback.setProgress(int((i + 1) / total * 100) if total else 0)
+
+        return {self.OUTPUT: dest_id}
+
+    def postProcessAlgorithm(self, context, feedback):
+        layer = QgsProcessingUtils.mapLayerFromString(self._dest_id, context)
+        if layer:
+            qml = os.path.join(_STYLES_DIR, 'confluence_check.qml')
+            if os.path.isfile(qml):
+                layer.loadNamedStyle(qml)
+                layer.triggerRepaint()
         return {}
 
     def name(self):
@@ -201,9 +217,11 @@ class CheckRorbLinksAlgorithm(QgsProcessingAlgorithm):
         return self.tr(
             "Check that reach line IDs are consistent with their connected nodes, "
             "and that every node connects to at least one reach.\n\n"
-            "For each reach, the expected id is 'startNodeId_endNodeId'. Any mismatch "
+            "For each reach the expected id is 'startNodeId_endNodeId'. Any mismatch "
             "is reported in the log. Nodes with no connected reaches are flagged.\n\n"
-            "Results are shown in the Processing log — no output layer is created."
+            "Outputs a copy of the confluences layer with out=99 on any unconnected "
+            "confluence nodes, styled with the check symbology so problem nodes are "
+            "immediately visible."
         )
 
     def tr(self, string):

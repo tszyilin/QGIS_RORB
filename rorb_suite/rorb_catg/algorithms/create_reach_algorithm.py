@@ -4,17 +4,22 @@ __author__ = 'Tom Norman'
 __date__ = '2023-06-15'
 __copyright__ = '(C) 2025 by Tom Norman'
 
+import os
+
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterVectorDestination,
     QgsProcessingParameterCrs,
+    QgsProcessingUtils,
     QgsFeature,
     QgsField,
     QgsFields,
 )
 from ..compat import STRING, INT, DOUBLE, FAST_INSERT, TYPE_LINE, WKB_LINE
+
+_STYLES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'styles')
 
 # RORB reach type codes (Table 5-1 in RORB manual)
 _REACH_TYPE_INFO = (
@@ -82,6 +87,7 @@ class CreateReachAlgorithm(QgsProcessingAlgorithm):
             parameters, self.OUTPUT, context,
             fields, out_type, out_crs
         )
+        self._dest_id = dest_id
 
         if source:
             in_fields = source.fields()
@@ -115,6 +121,15 @@ class CreateReachAlgorithm(QgsProcessingAlgorithm):
             )
 
         return {self.OUTPUT: dest_id}
+
+    def postProcessAlgorithm(self, context, feedback):
+        layer = QgsProcessingUtils.mapLayerFromString(self._dest_id, context)
+        if layer:
+            qml = os.path.join(_STYLES_DIR, 'reaches.qml')
+            if os.path.isfile(qml):
+                layer.loadNamedStyle(qml)
+                layer.triggerRepaint()
+        return {}
 
     def name(self):
         return 'create_reach'

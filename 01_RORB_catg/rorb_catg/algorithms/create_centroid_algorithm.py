@@ -4,16 +4,21 @@ __author__ = 'Tom Norman'
 __date__ = '2023-06-15'
 __copyright__ = '(C) 2025 by Tom Norman'
 
+import os
+
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (
     QgsProcessingAlgorithm,
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterVectorDestination,
+    QgsProcessingUtils,
     QgsFeature,
     QgsField,
     QgsFields,
 )
 from ..compat import STRING, DOUBLE, FAST_INSERT, TYPE_POLYGON, WKB_POINT
+
+_STYLES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'styles')
 
 
 class CreateCentroidAlgorithm(QgsProcessingAlgorithm):
@@ -51,6 +56,7 @@ class CreateCentroidAlgorithm(QgsProcessingAlgorithm):
             parameters, self.OUTPUT, context,
             fields, WKB_POINT, source.sourceCrs()
         )
+        self._dest_id = dest_id
 
         total = source.featureCount()
         for i, feat in enumerate(source.getFeatures()):
@@ -62,6 +68,15 @@ class CreateCentroidAlgorithm(QgsProcessingAlgorithm):
             feedback.setProgress(int((i + 1) / total * 100) if total else 0)
 
         return {self.OUTPUT: dest_id}
+
+    def postProcessAlgorithm(self, context, feedback):
+        layer = QgsProcessingUtils.mapLayerFromString(self._dest_id, context)
+        if layer:
+            qml = os.path.join(_STYLES_DIR, 'centroid.qml')
+            if os.path.isfile(qml):
+                layer.loadNamedStyle(qml)
+                layer.triggerRepaint()
+        return {}
 
     def name(self):
         return 'create_centroid'

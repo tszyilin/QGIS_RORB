@@ -98,7 +98,12 @@ class VectorBlock():
             ret = (3, i)
         elif (self._runningHydro) and (isinstance(traveller._catchment._vertices[i], Confluence)) and (up == i):
             traveller.next()
-            ret = (5, i)
+            ret = (5, i)  # ROUTE — build() adds the final "0" terminator separately
+        else:
+            # Unhandled state (e.g. Confluence visited while _runningHydro is False).
+            # Use skip sentinel: _control ignores code -1, so no CV entry is emitted.
+            traveller.next()
+            ret = (-1, i)
 
         self._stateVector.append(ret)
 
@@ -393,7 +398,7 @@ class GraphicsBlock():
             The traveller traversing this catchment.
         """
         pos = code[1]
-        if code[0] in (1, 2, 5):
+        if code[0] in (1, 2, 5, -1):
             node = traveller.getNode(pos)
             x, y = node.coordinates()
             _PC_TO_PRNT = {'7': 70, '7.1': 71, '7.2': 72}
@@ -426,8 +431,9 @@ class GraphicsBlock():
                 'location_name': loc_name
             }
 
-            self._idMap[data['id']] = next(self._nodeID)
-            self._nodeVector.append(data)
+            if data['id'] not in self._idMap:
+                self._idMap[data['id']] = next(self._nodeID)
+                self._nodeVector.append(data)
 
     def _reachDisplay(self, code: tuple, traveller: Traveller) -> None:
         """Add display information for a reach to the reach vector.

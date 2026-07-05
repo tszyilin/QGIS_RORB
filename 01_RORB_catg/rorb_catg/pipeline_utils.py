@@ -10,7 +10,9 @@ __date__ = '2023-06-15'
 __copyright__ = '(C) 2025 by Tom Norman'
 
 import os
+import shutil
 import string
+import time
 from collections import defaultdict
 
 from qgis.core import (
@@ -83,6 +85,59 @@ def _build_output_fields(in_fields, replacements):
 
 SHAPEFILE_EXTS = ('.shp', '.dbf', '.shx', '.prj', '.cpg', '.qpj', '.idx', '.sbn', '.sbx')
 
+
+def layer_file_path(layer):
+    """Return the on-disk path of a vector layer's source file (no OGR sublayer suffix)."""
+    return layer.source().split('|')[0]
+
+
+def is_rewritable_shapefile(layer):
+    """True if layer is an OGR-backed .shp file that exists on disk."""
+    path = layer_file_path(layer)
+    return (layer.dataProvider() is not None
+            and layer.providerType() == 'ogr'
+            and path.lower().endswith('.shp')
+            and os.path.isfile(path))
+
+
+def replace_shapefile(tmp_path, final_path, retries=20, delay=0.15):
+    """
+    Copy the shapefile (and sidecars) at tmp_path over final_path, replacing
+    it in place. Retries briefly since Windows may hold the original file
+    handle open for a moment after its QgsVectorLayer is removed from the
+    project. Copies (rather than moves/renames) so an open read handle on
+    tmp_path doesn't block the operation.
+    """
+    import gc
+    from qgis.PyQt.QtWidgets import QApplication
+
+    tmp_base = os.path.splitext(tmp_path)[0]
+    last_err = None
+    for attempt in range(retries):
+        # QgsProject.removeMapLayer() schedules the layer's C++ object for
+        # deletion via deleteLater() — pump the event loop and force garbage
+        # collection so the OGR file handle it holds is actually released
+        # before we try to overwrite it.
+        gc.collect()
+        QApplication.processEvents()
+        try:
+            _delete_shapefile_if_exists(final_path)
+            break
+        except OSError as e:
+            last_err = e
+            time.sleep(delay)
+    else:
+        raise RuntimeError(
+            f'Could not overwrite "{final_path}" — the file appears to be '
+            f'locked (still open elsewhere): {last_err}')
+
+    final_base = os.path.splitext(final_path)[0]
+    for ext in SHAPEFILE_EXTS:
+        src = tmp_base + ext
+        if os.path.exists(src):
+            shutil.copy2(src, final_base + ext)
+
+
 def _delete_shapefile_if_exists(path):
     """Remove all sidecar files for an existing shapefile."""
     base = os.path.splitext(path)[0]
@@ -130,7 +185,8 @@ def name_subcatchments(source_layer, output_path):
         transform = None
 
     rows = []
-    for feat in source_layer.getFeatures():
+    feats = source_layer.getFeatures()
+    for feat in feats:
         geom = feat.geometry()
         if transform:
             g2 = QgsGeometry(geom)
@@ -139,6 +195,7 @@ def name_subcatchments(source_layer, output_path):
         else:
             y = geom.centroid().asPoint().y()
         rows.append((y, feat))
+    feats.close()
 
     rows.sort(key=lambda r: r[0])  # ascending y = south → north
 
@@ -178,7 +235,8 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
     # Build spatial index over subcatchments (in centroid CRS)
     sub_index = QgsSpatialIndex()
     sub_dict  = {}
-    for sub_feat in named_subs_layer.getFeatures():
+    feats = named_subs_layer.getFeatures()
+    for sub_feat in feats:
         geom = sub_feat.geometry()
         if sub_transform:
             geom.transform(sub_transform)
@@ -186,9 +244,11 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
         f.setGeometry(geom)
         sub_index.insertFeature(f)
         sub_dict[sub_feat.id()] = (geom, sub_feat['id'])  # (geom, numeric_id)
+    feats.close()
 
     out_feats = []
-    for cent_feat in cent_layer.getFeatures():
+    feats = cent_layer.getFeatures()
+    for cent_feat in feats:
         pt = cent_feat.geometry()
         candidates = sub_index.intersects(pt.boundingBox())
         matched_numeric_id = None
@@ -214,6 +274,7 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
         attrs.append(fi_val)
         f.setAttributes(attrs)
         out_feats.append(f)
+    feats.close()
 
     return _write_shapefile(out_feats, out_fields, cent_layer.wkbType(), cent_crs, output_path)
 
@@ -242,7 +303,8 @@ def name_confluences(source_layer, output_path):
         transform = None
 
     rows = []
-    for feat in source_layer.getFeatures():
+    feats = source_layer.getFeatures()
+    for feat in feats:
         geom = feat.geometry()
         if transform:
             g2 = QgsGeometry(geom)
@@ -251,6 +313,7 @@ def name_confluences(source_layer, output_path):
         else:
             y = geom.asPoint().y()
         rows.append((y, feat))
+    feats.close()
 
     rows.sort(key=lambda r: r[0])
     id_list = _generate_lowercase_ids(len(rows))
@@ -304,11 +367,13 @@ def name_reaches(named_cents_layer, named_confs_layer, reach_layer, output_path,
     def _load(layer):
         t = (QgsCoordinateTransform(layer.crs(), reach_crs, QgsProject.instance())
              if layer.crs() != reach_crs else None)
-        for feat in layer.getFeatures():
+        feats = layer.getFeatures()
+        for feat in feats:
             geom = feat.geometry()
             if t:
                 geom.transform(t)
             nodes.append((str(feat['id']), geom))
+        feats.close()
 
     _load(named_cents_layer)
     _load(named_confs_layer)
@@ -334,7 +399,8 @@ def name_reaches(named_cents_layer, named_confs_layer, reach_layer, output_path,
     out_feats = []
     unnamed = []
 
-    for feat in reach_layer.getFeatures():
+    feats = reach_layer.getFeatures()
+    for feat in feats:
         geom = feat.geometry()
         reach_id = ''
 
@@ -369,6 +435,7 @@ def name_reaches(named_cents_layer, named_confs_layer, reach_layer, output_path,
         attrs += [t_val, s_val, reach_id]
         f.setAttributes(attrs)
         out_feats.append(f)
+    feats.close()
 
     result_layer = _write_shapefile(out_feats, out_fields, reach_layer.wkbType(),
                                     reach_crs, output_path)
@@ -417,11 +484,13 @@ def run_checks(reach_layer, cent_layer, conf_layer):
     def _load(layer):
         t = (QgsCoordinateTransform(layer.crs(), reach_crs, QgsProject.instance())
              if layer.crs() != reach_crs else None)
-        for feat in layer.getFeatures():
+        feats = layer.getFeatures()
+        for feat in feats:
             geom = feat.geometry()
             if t:
                 geom.transform(t)
             nodes.append((str(feat['id']), geom))
+        feats.close()
 
     _load(cent_layer)
     n_cents = len(nodes)
@@ -496,6 +565,22 @@ def run_checks(reach_layer, cent_layer, conf_layer):
         error_node_ids.update(isolated)
     else:
         results.append(('pass', f'All {len(nodes)} node(s) connect to at least one reach'))
+
+    # ── Directed connectivity: every confluence must have at least one incoming reach
+    # A confluence node with only outgoing reach(es) is a topological dead-end —
+    # pyromb cannot determine the calculation order for nodes downstream of it.
+    no_incoming = [
+        nid for nid, _ in nodes[n_cents:]   # confluences only
+        if nid not in _to_ids
+    ]
+    if no_incoming:
+        for nid in no_incoming:
+            results.append(('fail',
+                f'Confluence "{nid}": has outgoing reach but no incoming reach '
+                f'— remove or reconnect this node'))
+        error_node_ids.update(no_incoming)
+    else:
+        results.append(('pass', 'All confluence nodes have at least one incoming reach'))
 
     neg = []
     for feat in reach_layer.getFeatures():

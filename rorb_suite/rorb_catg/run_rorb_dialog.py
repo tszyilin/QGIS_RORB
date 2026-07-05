@@ -259,6 +259,349 @@ def parse_catg_isa_count(path):
     return len(parse_catg_isa_groups(path))
 
 
+def parse_catg_calc_order(path):
+    """
+    Parse .catg nodes, reaches, and control vector.
+
+    Returns (rows, missing) where:
+      rows    – list of dicts: calc_no, code_str, node, reach, storage,
+                io, name, io_id, av_dist_km
+      missing – dict: nodes, reaches, storages, io  (lists of str)
+    """
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        lines = fh.readlines()
+
+    # ── #NODES ───────────────────────────────────────────────────────────────
+    nodes = {}        # id → {is_basin, downstream, area, name}
+    basin_order = []  # basin node IDs in appearance order
+    in_sec = False
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        i += 1
+        if '#NODES' in s:
+            in_sec = True
+            continue
+        if any(k in s for k in ('#REACHES', '#STORAGES', '#INFLOW', 'END RORB_GE')):
+            in_sec = False
+        if not in_sec or not s.startswith('C'):
+            continue
+        body = s[1:].strip()
+        if not body or not body[0].isdigit():
+            continue
+        nums = _numeric_tokens(body)
+        if len(nums) < 7:
+            continue
+        nid = int(nums[0])
+        is_basin = int(nums[4]) == 1
+        dn_raw = int(nums[6]) if len(nums) > 6 else 0
+        dn = dn_raw if dn_raw != 0 else None
+        # print_code: at nums[9] for non-basin nodes (70 = Code 7, 72 = Code 7.2)
+        print_code = int(nums[9]) if len(nums) > 9 else 0
+        # Name: peek at the immediately following C line for text-only content
+        name = None
+        if i < len(lines):
+            ns = lines[i].strip()
+            if ns.startswith('C'):
+                cand = ns[1:].strip()
+                if cand and not cand[0].isdigit():
+                    name = cand
+        nodes[nid] = {
+            'is_basin': is_basin,
+            'downstream': dn,
+            'area': 0.0,
+            'name': name or str(nid),
+            'print_code': print_code,
+            'has_text_name': name is not None,
+        }
+        if is_basin:
+            basin_order.append(nid)
+
+    # Areas are filled after parsing the control vector (Code-1 order), not here.
+
+    # Queues of unnamed print nodes in #NODES appearance order, used as fallback
+    # for Code-7 instructions that have no text name following them.
+    from collections import deque
+    _unnamed_q70 = deque(
+        nid for nid, n in nodes.items()
+        if n['print_code'] == 70 and not n['has_text_name']
+    )
+    _unnamed_q72 = deque(
+        nid for nid, n in nodes.items()
+        if n['print_code'] == 72 and not n['has_text_name']
+    )
+
+    # Detect RORB_GE format version — determines #REACHES field layout.
+    # Old (< 4.0, e.g. "002"): seq  from  to  flags  length
+    # New (>= 4.0):            seq  reach_id_or_name  from  to  flags  length
+    #   reach_id_or_name is either an integer (== seq) or a text name.
+    _ge_ver = 0.0
+    for _l in lines[:20]:
+        _m = re.search(r'C\s+RORB_GE\s+([\d.]+)', _l)
+        if _m:
+            try:
+                _ge_ver = float(_m.group(1))
+            except ValueError:
+                pass
+            break
+    _new_reach_fmt = _ge_ver >= 4.0
+
+    # ── #REACHES ─────────────────────────────────────────────────────────────
+    reaches = {}  # id → {from_node, to_node, length_km}
+    in_sec = False
+    for line in lines:
+        s = line.strip()
+        if '#REACHES' in s:
+            in_sec = True
+            continue
+        if any(k in s for k in ('#STORAGES', '#INFLOW', 'END RORB_GE')):
+            in_sec = False
+        if not in_sec or not s.startswith('C'):
+            continue
+        body = s[1:].strip()
+        if not body or not body[0].isdigit():
+            continue
+        nums = _numeric_tokens(body)
+        if len(nums) < 7:
+            continue
+
+        if _new_reach_fmt:
+            # Check whether the second raw token is a number (numbered reach,
+            # seq_id == reach_id) or text (named reach, skipped by _numeric_tokens).
+            raw2 = body.split()[1] if len(body.split()) > 1 else ''
+            try:
+                _v = float(raw2)
+                is_numbered = (_v == float(int(_v)) and int(_v) == int(nums[0]))
+            except ValueError:
+                is_numbered = False  # text reach name
+
+            if is_numbered:
+                # Numbered: seq reach_id(=seq) from to flags... length
+                # Coordinate lines also start with floats — filter them out by
+                # requiring nums[0] == nums[1] and both integral.
+                if nums[0] != nums[1] or nums[0] != float(int(nums[0])):
+                    continue
+                rid, from_node, to_node = int(nums[1]), int(nums[2]), int(nums[3])
+                length_km = nums[7] if len(nums) > 7 else 0.0
+            else:
+                # Named reach: seq  name  from  to  flags... length
+                # (name skipped → from=nums[1], to=nums[2], length=nums[6])
+                # Coordinate lines have very few values — filter with len check.
+                if len(nums) < 8 or nums[0] != float(int(nums[0])) or int(nums[0]) < 1:
+                    continue
+                rid, from_node, to_node = int(nums[0]), int(nums[1]), int(nums[2])
+                length_km = nums[6] if len(nums) > 6 else 0.0
+        else:
+            # Old format: seq  from  to  flags... length
+            if nums[0] != float(int(nums[0])) or int(nums[0]) < 1:
+                continue
+            rid, from_node, to_node = int(nums[0]), int(nums[1]), int(nums[2])
+            length_km = nums[6] if len(nums) > 6 else 0.0
+
+        reaches[rid] = {
+            'from_node': from_node,
+            'to_node': to_node,
+            'length_km': length_km,
+        }
+
+    # node → (downstream_node, reach_length_km, reach_id)
+    node_dn = {}
+    for rid, r in reaches.items():
+        node_dn[r['from_node']] = (r['to_node'], r['length_km'], rid)
+
+    # ── Control vector ────────────────────────────────────────────────────────
+    # All .catg files start with: file-title line, then a control-vector header
+    # number ("0" or "1").  Skip both before reading instructions.
+    rows = []
+    _hdr_skip = 0
+    calc_no = 0
+    _cv_basin_idx = 0   # tracks which basin node corresponds to each Code 1/2 instruction
+    j = 0
+    while j < len(lines):
+        s = lines[j].strip()
+        j += 1
+        if s.startswith('C') or not s:
+            continue
+        if _hdr_skip < 2:
+            _hdr_skip += 1
+            continue   # skip file title (1st) and control-vector header (2nd)
+        parts = [p.strip() for p in s.split(',')]
+        code_str = parts[0]
+        try:
+            code_f = float(code_str)
+        except ValueError:
+            continue
+        if code_f == 0:
+            break
+        calc_no += 1
+
+        row = {
+            'calc_no': calc_no,
+            'code_str': code_str,
+            'node': '', 'reach': '', 'storage': '', 'io': '',
+            'name': '', 'io_id': '', 'av_dist_km': None,
+            'reach_len': 0.0,   # reach length from instruction field 2
+        }
+
+        comment = parts[3] if len(parts) > 3 else ''
+
+        if code_f in (1.0, 2.0):
+            try:
+                # Two .catg formats exist:
+                #   Old: code, length, -99, comment   → parts[2] == '-99'
+                #   New: code, coefficient, length, -99 → parts[2] is the length
+                if len(parts) > 2 and parts[2].strip() == '-99':
+                    row['reach_len'] = float(parts[1]) if len(parts) > 1 else 0.0
+                else:
+                    row['reach_len'] = float(parts[2]) if len(parts) > 2 else 0.0
+            except (ValueError, IndexError):
+                pass
+            m = re.search(r'Reach\s+(\d+)', comment, re.I)
+            if m:
+                row['reach'] = m.group(1)
+            m = re.search(r'node\s+(\d+)', comment, re.I)
+            if m:
+                row['node'] = m.group(1)
+            # Fallback: infer node/reach from basin_order counter when the
+            # comment field carries no IDs (e.g. plain "-99" new format).
+            if not row['node'] and _cv_basin_idx < len(basin_order):
+                nid = basin_order[_cv_basin_idx]
+                row['node'] = str(nid)
+                if nid in node_dn:
+                    row['reach'] = str(node_dn[nid][2])
+            _cv_basin_idx += 1
+            row['io_id'] = row['node']
+
+        elif code_f == 5.0:
+            try:
+                if len(parts) > 2 and parts[2].strip() == '-99':
+                    row['reach_len'] = float(parts[1]) if len(parts) > 1 else 0.0
+                else:
+                    row['reach_len'] = float(parts[2]) if len(parts) > 2 else 0.0
+            except (ValueError, IndexError):
+                pass
+            m = re.search(r'Reach\s+(\d+)', comment, re.I)
+            if m:
+                row['reach'] = m.group(1)
+
+        elif 7.0 <= code_f < 8.0:
+            # Name is on the next non-blank, non-comment line.
+            # Real instructions always contain a comma; the terminator is bare "0".
+            # Bare numbers without a comma are ISA group labels (e.g. "1", "2"),
+            # NOT instructions — consume them as the node name.
+            while j < len(lines):
+                ns = lines[j].strip()
+                j += 1
+                if ns and not ns.startswith('C'):
+                    candidate = ns.split(',')[0].strip()
+                    if ',' in ns or candidate == '0':
+                        j -= 1  # real instruction or terminator — put back
+                    else:
+                        row['name'] = candidate  # text name or bare ISA label
+                    break
+            for nid, n in nodes.items():
+                if n['name'] == row['name']:
+                    row['node'] = str(nid)
+                    break
+            # Fallback for unnamed prints: assign from the #NODES queue
+            if not row['node']:
+                q = _unnamed_q72 if code_f > 7.05 else _unnamed_q70
+                if q:
+                    row['node'] = str(q.popleft())
+            row['code_str'] = '7'          # display both as "7"
+            row['_resets_isa'] = code_f > 7.05  # 7.2 resets ISA; plain 7 does not
+
+        elif code_f == 9.0:
+            m = re.search(r'(\d+)', comment)
+            if m:
+                row['io'] = m.group(1)
+
+        rows.append(row)
+
+    # ── Area assignment: CV Code-1 order, not #NODES order ───────────────────
+    # The "Areas, km²" data table lists areas in the order Code-1/2 instructions
+    # appear in the control vector, NOT in #NODES appearance order.
+    area_vals = _parse_data_table(lines, 'Areas, km')
+    cv_basin_order = [int(r['node']) for r in rows
+                      if r['code_str'] in ('1', '2') and r['node']]
+    for idx, nid in enumerate(cv_basin_order):
+        if idx < len(area_vals) and nid in nodes:
+            nodes[nid]['area'] = area_vals[idx]
+
+    # ── Av. Dist. via RORB state-machine simulation ───────────────────────────
+    # RORB computes Av. Dist. by tracking (av_dist, area) through the control
+    # vector, mirroring its internal stack-based hydrograph accumulation:
+    #   Code 1: H_run = (reach_len, sub_area_area)           replace
+    #   Code 2: H_run = combine(H_run, (reach_len, area))    add to current
+    #   Code 3: stack.push(H_run)   [H_run unchanged]
+    #   Code 4: H_run = combine(H_run, stack.pop())
+    #   Code 5: H_run.av_dist += reach_len
+    #   Code 7: record H_run.av_dist; H_run = (0, 0)         reset
+
+    def _wt_combine(av1, a1, av2, a2):
+        total = a1 + a2
+        if total <= 0:
+            return 0.0, 0.0
+        return (av1 * a1 + av2 * a2) / total, total
+
+    h_av, h_a = 0.0, 0.0   # running (av_dist, area)
+    sim_stack = []          # list of (av_dist, area)
+
+    for row in rows:
+        cs = row['code_str']
+        if cs == '1':
+            if row['node']:
+                try:
+                    area = nodes[int(row['node'])]['area']
+                    h_av, h_a = row['reach_len'], area
+                except (ValueError, KeyError):
+                    pass
+        elif cs == '2':
+            if row['node']:
+                try:
+                    area = nodes[int(row['node'])]['area']
+                    # The existing running hydrograph also travels reach_len before
+                    # combining with the new sub-area, so advance h_av first.
+                    h_av, h_a = _wt_combine(h_av + row['reach_len'], h_a,
+                                            row['reach_len'], area)
+                except (ValueError, KeyError):
+                    pass
+        elif cs == '3':
+            sim_stack.append((h_av, h_a))
+        elif cs == '4':
+            if sim_stack:
+                s_av, s_a = sim_stack.pop()
+                h_av, h_a = _wt_combine(h_av, h_a, s_av, s_a)
+        elif cs == '5':
+            h_av += row['reach_len']
+        elif cs == '7':
+            if row['node'] and h_a > 0:
+                row['av_dist_km'] = h_av
+            if row.get('_resets_isa', False):
+                h_av, h_a = 0.0, 0.0   # Code 7.2 only; plain Code 7 keeps H_run
+
+    # ── Missing elements ──────────────────────────────────────────────────────
+    missing = {'nodes': [], 'reaches': [], 'storages': [], 'io': []}
+    for row in rows:
+        if row['node'] and row['code_str'] != '7':
+            try:
+                nid = int(row['node'])
+                if nid not in nodes and nid not in missing['nodes']:
+                    missing['nodes'].append(nid)
+            except ValueError:
+                pass
+        if row['reach']:
+            try:
+                rid = int(row['reach'])
+                if rid not in reaches and rid not in missing['reaches']:
+                    missing['reaches'].append(rid)
+            except ValueError:
+                pass
+
+    missing = {k: [str(x) for x in sorted(v)] for k, v in missing.items()}
+    return rows, missing
+
+
 # ── .par file writer ────────────────────────────────────────────────────────
 
 def write_par_file(path, catg, stm, lumped, verbosity, lossmodel, areas_params):
@@ -913,6 +1256,7 @@ class RorbRunDialog(QDialog):
 
         self.tabs = QTabWidget()
         self._add_pipeline_tab()
+        self.tabs.addTab(self._build_tab_calc_order(), 'Calc. Order')
         self.tabs.addTab(self._build_tab_storm(), 'Setup')
         self.tabs.addTab(self._build_tab_params(), 'Parameters')
         self.tabs.addTab(self._build_tab_log(), 'Log')
@@ -970,9 +1314,120 @@ class RorbRunDialog(QDialog):
     def _on_catg_built_from_tab(self, catg_path):
         self.txt_catg.setText(catg_path)
         self._load_catg(catg_path)
-        self.tabs.setCurrentIndex(1)  # Switch to Setup tab
+        self.tabs.setCurrentIndex(2)  # Switch to Setup tab
 
-    # ── Tab 1: Storm & Run Setup ─────────────────────────────────────────────
+    # ── Tab 1: Calculation Order ─────────────────────────────────────────────
+
+    def _build_tab_calc_order(self):
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(6)
+
+        # .catg browse row
+        catg_row = QHBoxLayout()
+        catg_row.addWidget(QLabel('.catg file:'))
+        self._calc_txt_catg = QLineEdit()
+        self._calc_txt_catg.setPlaceholderText('Select or drag a .catg file to view its calculation order…')
+        self._calc_txt_catg.setReadOnly(True)
+        catg_row.addWidget(self._calc_txt_catg, 1)
+        btn_browse_catg = QPushButton('Browse…')
+        btn_browse_catg.setFixedWidth(80)
+        btn_browse_catg.clicked.connect(self._browse_calc_catg)
+        catg_row.addWidget(btn_browse_catg)
+        outer.addLayout(catg_row)
+
+        # Table — Name | Node | Av. Dist. (km)
+        col_labels = ['Name', 'Node', 'Av. Dist. (km)']
+        self._calc_table = QTableWidget(0, len(col_labels))
+        self._calc_table.setHorizontalHeaderLabels(col_labels)
+        self._calc_table.verticalHeader().setVisible(False)
+        self._calc_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._calc_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._calc_table.setAlternatingRowColors(True)
+        hh = self._calc_table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)          # Name stretches
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Node
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Av. Dist.
+        outer.addWidget(self._calc_table, 1)
+
+        # Missing-elements status row
+        status_row = QHBoxLayout()
+        status_row.setSpacing(4)
+        for label_text, attr in [
+            ('Missing Nodes:', '_lbl_miss_nodes'),
+            ('Missing Reaches:', '_lbl_miss_reaches'),
+            ('Missing Storages:', '_lbl_miss_storages'),
+            ('Missing In/Outflows:', '_lbl_miss_io'),
+        ]:
+            status_row.addWidget(QLabel(label_text))
+            lbl = QLabel('none')
+            lbl.setStyleSheet('color: green;')
+            setattr(self, attr, lbl)
+            status_row.addWidget(lbl)
+            status_row.addSpacing(16)
+        status_row.addStretch()
+        outer.addLayout(status_row)
+
+        self._calc_rows_codes = []
+        return w
+
+    def _populate_calc_order_tab(self, path):
+        self._calc_table.setRowCount(0)
+        self._calc_rows_codes = []
+        if not path or not os.path.isfile(path):
+            return
+        self._calc_txt_catg.setText(path)
+        try:
+            rows, missing = parse_catg_calc_order(path)
+        except Exception:
+            return
+
+        # Only show Code 7 (print) rows — they're the only ones with name + av. dist.
+        print_rows = [row for row in rows if row['code_str'] == '7']
+        self._calc_table.setRowCount(len(print_rows))
+        COL_NAME = 0; COL_NODE = 1; COL_DIST = 2
+
+        def _item(txt, align=ALIGN_CENTER):
+            it = QTableWidgetItem(str(txt) if txt else '')
+            it.setTextAlignment(align)
+            return it
+
+        for r, row in enumerate(print_rows):
+            self._calc_table.setItem(r, COL_NAME,
+                _item(row['name'], Qt.AlignLeft | Qt.AlignVCenter))
+            self._calc_table.setItem(r, COL_NODE, _item(row['node']))
+            av = f'{row["av_dist_km"]:.4f}' if row['av_dist_km'] is not None else ''
+            self._calc_table.setItem(r, COL_DIST, _item(av))
+
+        self._calc_rows_codes = []  # no row-level filtering needed
+
+        for attr, key in [
+            ('_lbl_miss_nodes', 'nodes'),
+            ('_lbl_miss_reaches', 'reaches'),
+            ('_lbl_miss_storages', 'storages'),
+            ('_lbl_miss_io', 'io'),
+        ]:
+            lbl = getattr(self, attr)
+            items = missing.get(key, [])
+            if items:
+                lbl.setText(', '.join(items))
+                lbl.setStyleSheet('color: red;')
+            else:
+                lbl.setText('none')
+                lbl.setStyleSheet('color: green;')
+
+    def _filter_calc_order_table(self):
+        pass  # table now shows only Code 7 rows — no filtering needed
+
+    def _browse_calc_catg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select RORB catchment file', '', 'RORB Graphical (*.catg)')
+        if path:
+            self._calc_txt_catg.setText(path)
+            self._populate_calc_order_tab(path)
+
+    # ── Tab 2: Storm & Run Setup ─────────────────────────────────────────────
 
     def _build_tab_storm(self):
         scroll = QScrollArea()
@@ -1463,6 +1918,7 @@ class RorbRunDialog(QDialog):
             self._isa_names = ['ISA 1']
             self._isa_count = 1
         self._rebuild_table()
+        self._populate_calc_order_tab(path)
 
     def _rebuild_table(self):
         lumped = self.rd_param_single.isChecked()
@@ -1649,7 +2105,7 @@ class RorbRunDialog(QDialog):
         self.btn_open_results.setEnabled(False)
         self.btn_run_text.setEnabled(False)
         self.btn_run_plot.setEnabled(False)
-        self.tabs.setCurrentIndex(3)  # Switch to Log tab
+        self.tabs.setCurrentIndex(4)  # Switch to Log tab
         self._log('info', f'Launching: {par_path}')
 
         watch_dir = self._staging_dir if self._staging_dir else os.path.dirname(catg_abs)
@@ -1757,7 +2213,7 @@ class RorbRunDialog(QDialog):
         self.btn_run_plot.setVisible(False)
         self.btn_stop.setVisible(True)
         self.btn_stop.setEnabled(True)
-        self.tabs.setCurrentIndex(3)
+        self.tabs.setCurrentIndex(4)
 
         self._last_out_folder = out_dir
         stm_count = sum(1 for f in os.listdir(stm_folder) if f.lower().endswith('.stm'))
@@ -1845,7 +2301,7 @@ class RorbRunDialog(QDialog):
         self.btn_run_plot.setVisible(False)
         self.btn_stop.setVisible(True)
         self.btn_stop.setEnabled(True)
-        self.tabs.setCurrentIndex(3)  # Switch to Log tab
+        self.tabs.setCurrentIndex(4)  # Switch to Log tab
 
         self._last_out_folder = out_dir
         self._log('info', f'Starting ensemble: {len(selected_aeps)} AEPs x '
