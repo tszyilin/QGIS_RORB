@@ -21,7 +21,7 @@ from qgis.gui import QgsMapLayerComboBox, QgsHighlight
 from qgis.core import (
     QgsProject, QgsDistanceArea, QgsUnitTypes, QgsVectorLayer,
     QgsPalLayerSettings, QgsTextFormat, QgsTextBufferSettings,
-    QgsVectorLayerSimpleLabeling,
+    QgsVectorLayerSimpleLabeling, QgsSpatialIndex,
 )
 from .compat import (ALIGN_RIGHT, ALIGN_CENTER,
                      LAYER_POINT, LAYER_LINE, LAYER_POLYGON)
@@ -839,21 +839,43 @@ class RorbPipelineDialog(QWidget):
             tb = builder.basin(cent_vec, basin_vec)
 
             # Replace pyromb's planar areas with QGIS ellipsoidal areas.
-            # Basin polygons have numeric id (1, 2, …); Basin objects are named
-            # with letter ids (A, B, …) derived from those numbers — convert to
-            # match.
+            # Use a direct centroid→polygon spatial join rather than the
+            # intermediate id-field conversion, which is fragile when QGIS's
+            # OGR connection pool returns stale or partial data on a freshly
+            # rewritten file.  Also handles duplicate centroid points (two
+            # centroids inside the same polygon) by only counting each unique
+            # polygon once for the total-area display.
             da = QgsDistanceArea()
             da.setSourceCrs(self._named_basins.crs(),
                             QgsProject.instance().transformContext())
             da.setEllipsoid(QgsProject.instance().ellipsoid())
+
+            # Build spatial index over subcatchment polygons.
+            poly_index = QgsSpatialIndex()
+            poly_geom = {}   # QgsFeatureId → QgsGeometry
+            for poly_feat in self._named_basins.getFeatures():
+                poly_index.insertFeature(poly_feat)
+                poly_geom[poly_feat.id()] = poly_feat.geometry()
+
+            # Map centroid letter → ellipsoidal area (km²) of the containing polygon.
+            # The first matching polygon wins; duplicates (same letter) are skipped.
             ellipsoidal_area_km2 = {}
-            for feat in self._named_basins.getFeatures():
-                letter = _id_to_uppercase(feat['id'])
-                if letter:
-                    ellipsoidal_area_km2[letter] = da.convertAreaMeasurement(
-                        da.measureArea(feat.geometry()),
-                        QgsUnitTypes.AreaSquareKilometers
-                    )
+            for cent_feat in self._named_cents.getFeatures():
+                try:
+                    letter = str(cent_feat['id']).strip()
+                except Exception:
+                    letter = ''
+                if not letter or letter in ellipsoidal_area_km2:
+                    continue
+                pt = cent_feat.geometry()
+                for fid in poly_index.intersects(pt.boundingBox()):
+                    if poly_geom[fid].contains(pt):
+                        ellipsoidal_area_km2[letter] = da.convertAreaMeasurement(
+                            da.measureArea(poly_geom[fid]),
+                            QgsUnitTypes.AreaSquareKilometers
+                        )
+                        break
+
             for b in tb:
                 if b.name in ellipsoidal_area_km2:
                     b.area = ellipsoidal_area_km2[b.name]
@@ -865,18 +887,22 @@ class RorbPipelineDialog(QWidget):
             with open(output, 'w') as f:
                 f.write(traveller.getVector(pyromb.RORB()))
 
-            total_area = sum(b.area for b in tb)
+            # Sum unique polygon areas (ellipsoidal_area_km2 deduplicates
+            # duplicate centroids sharing the same polygon).
+            total_area = sum(ellipsoidal_area_km2.values())
+            n_subs = len(ellipsoidal_area_km2)
 
             self._log('pass', f'RORB {ext} written → {output}')
             self._log('info',
                       f'Total catchment area (ellipsoidal): '
-                      f'<b>{total_area:.4f} km²</b> ({len(tb)} sub-catchments)')
+                      f'<b>{total_area:.4f} km²</b> ({n_subs} sub-catchments)')
             if ext == '.catg':
                 self.btn_run_rorb.setEnabled(True)
             QMessageBox.information(self, 'Build complete',
                                     f'RORB control file written to:\n{output}\n\n'
                                     f'Total catchment area (ellipsoidal): '
-                                    f'{total_area:.4f} km²')
+                                    f'{total_area:.4f} km²\n'
+                                    f'({n_subs} sub-catchments)')
         except Exception as e:
             QMessageBox.critical(self, 'Build failed',
                                  f'Error building {ext} file:\n\n{e}')

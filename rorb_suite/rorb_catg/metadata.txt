@@ -5,7 +5,7 @@ name=QGIS RORB
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
-version=1.3
+version=1.4
 author=Tom Norman
 email=tom@ncos.com.au
 
@@ -33,6 +33,12 @@ repository=https://github.com/norman-tom/runoff-model
 hasProcessingProvider=yes
 
 changelog=
+v1.4: Build .catg: fix sub-catchment areas being wrong (stuck at basin[0]
+    default) for some polygons — replace the id-field polygon lookup with a
+    direct centroid→polygon spatial join that matches how name_centroids()
+    works; also fix total-area double-counting when a polygon contains two
+    centroid points.
+v1.3: (internal release — skipped to align with suite v2.9)
 v1.2: Fix print-node location names being dropped (and stray "NULL" text)
     when building .catg files; shorten the Build .catg pipeline dialog and
     simplify its stats sidebar.

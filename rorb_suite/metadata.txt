@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.9
+version=2.10
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,11 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.10: Build .catg: fix sub-catchment areas being wrong (stuck at the default
+    value from the first polygon) for some polygons — replace the fragile
+    polygon-id-field lookup with a direct centroid→polygon spatial join; also
+    fix total-area display double-counting when two centroid points share the
+    same polygon.
 v2.9: Run RORB: new Calc. Order tab — browse a .catg file to see print nodes,
     their names and average distances in calculation order. Build .catg: new
     "Rewrite input files" output mode overwrites original shapefiles in place
