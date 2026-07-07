@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.10
+version=2.11
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,9 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.11: Results Viewer: fix Critical Events hydrograph x-axis clipping to 2 hr when
+    the selected event has zero flow — now shows the full storm duration so rainfall
+    bars are visible.
 v2.10: Build .catg: fix sub-catchment areas being wrong (stuck at the default
     value from the first polygon) for some polygons — replace the fragile
     polygon-id-field lookup with a direct centroid→polygon spatial join; also

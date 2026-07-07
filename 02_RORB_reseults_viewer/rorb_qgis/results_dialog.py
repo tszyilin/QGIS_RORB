@@ -431,7 +431,8 @@ class RorbResultsDialog(QDockWidget):
         self._crit_ax.grid(True, alpha=0.25); self._crit_ax.legend(fontsize=8)
         if t:
             pk_t = t[int(np.argmax(q))]
-            self._crit_ax.set_xlim(0, min(t[-1], pk_t * 3 + 2))
+            x_max = min(t[-1], pk_t * 3 + 2) if pk_t > 0 else t[-1]
+            self._crit_ax.set_xlim(0, x_max)
         rain_t  = crit['rep_entry'].get('rain_t',  [])
         rain_mm = crit['rep_entry'].get('rain_mm', [])
         if len(rain_t) >= 2 and len(rain_mm) == len(rain_t):
