@@ -5,7 +5,7 @@ name=QGIS RORB
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
-version=1.4
+version=1.5
 author=Tom Norman
 email=tom@ncos.com.au
 
@@ -33,6 +33,10 @@ repository=https://github.com/norman-tom/runoff-model
 hasProcessingProvider=yes
 
 changelog=
+v1.5: Run RORB: add "Suggest Kc" helper dialog — choose a regional equation
+    (ARR Book 7 area-based or Dav-based Pearse et al.) or the RORB Manual
+    default (2.2 × √A) to compute a starting kc for the selected ISA group,
+    then adopt it into the Parameters table with one click.
 v1.4: Build .catg: fix sub-catchment areas being wrong (stuck at basin[0]
     default) for some polygons — replace the id-field polygon lookup with a
     direct centroid→polygon spatial join that matches how name_centroids()

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import json
 import time
 
 from qgis.PyQt.QtWidgets import (
@@ -30,6 +31,232 @@ except ImportError:
 
 from .compat import ALIGN_RIGHT, ALIGN_CENTER
 from . import arr2016_runner as _arr
+
+
+# ── Regional Kc equations ────────────────────────────────────────────────────
+# Each entry: (display_label, formula_type, coeff, exponent, area_limit_km2)
+#   formula_type 'A'   → kc = coeff × A^exponent   (A in km², area_limit enforced)
+#   formula_type 'Dav' → kc = coeff × Dav           (Dav in km, exponent/area_limit unused)
+_REGIONAL_KC_EQNS = [
+    # ── Area-based (ARR Book 7, 2019) ────────────────────────────────────────
+    ('Eastern NSW (Kleemola) - Eqn 7.6.13, ARR(BkVII)', 'A', 1.18, 0.46, None),
+    ('Vic (MAR>800mm) - Eqn 7.6.15, ARR(BkVII)',        'A', 2.57, 0.45, None),
+    ('Vic (MAR<800mm) - Eqn 7.6.16, ARR(BkVII)',        'A', 0.49, 0.65, None),
+    ('Queensland (Weeks) - Eqn 7.6.9, ARR(BkVII)',      'A', 0.88, 0.53, None),
+    ('S.A. (A<100km²) - Eqn 7.6.17, ARR(BkVII)',        'A', 0.60, 0.67, 100.0),
+    ('S. Tas (A<100km²) - Eqn 7.6.17, ARR(BkVII)',      'A', 0.60, 0.67, 100.0),
+    ('West Tas (HEC) - Eqn 7.6.29, ARR(BkVII)',         'A', 0.86, 0.57, None),
+    ('Nth Flinders Rngs S.A. (MAR<300mm) (Kemp,pers.comm)', 'A', 0.33, 0.52, None),
+    # ── Dav-based (area-standardised lag, Pearse et al. 2002) ─────────────
+    ('Victoria data (Pearse et al, 2002)',                'Dav', 1.25, None, None),
+    ('Aus wide Dyer (1994) data (Pearse et al, 2002)',    'Dav', 1.14, None, None),
+    ('Aus wide Yu (1989) data (Pearse et al, 2002)',      'Dav', 0.96, None, None),
+    ('Pilbara W.A. (Pearcey et al, 2014)',                'Dav', 0.59, None, None),
+]
+
+
+# ── Suggest Kc dialog ────────────────────────────────────────────────────────
+
+class SuggestKcDialog(QDialog):
+    """Suggest kc values via RORB Manual default or ARR regional equations."""
+
+    kc_adopted = pyqtSignal(int, float)  # (row_index, kc_value)
+
+    def __init__(self, parent, isa_groups, areas_km2, av_dists_km, peak_m3s=None):
+        """
+        isa_groups   : list[str]   — row labels matching the Parameters table
+        areas_km2    : list[float] — catchment area per group (km²)
+        av_dists_km  : list[float|None] — average flow distance per group (km)
+        peak_m3s     : float|None  — max peak flow from last run (display only)
+        """
+        super().__init__(parent)
+        self.setWindowTitle('Suggest values for Kc')
+        self.setMinimumWidth(400)
+        self._isa_groups  = isa_groups
+        self._areas_km2   = areas_km2
+        self._av_dists_km = av_dists_km
+        self._peak_m3s    = peak_m3s
+        self._build_ui()
+        self._refresh()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+
+        # ── Catchment attributes ─────────────────────────────────────────────
+        grp_attr = QGroupBox('Catchment attributes')
+        attr_lay = QVBoxLayout(grp_attr)
+
+        self._isa_combo = QComboBox()
+        self._isa_combo.addItems(self._isa_groups)
+        self._isa_combo.currentIndexChanged.connect(self._refresh)
+        attr_lay.addWidget(self._isa_combo)
+
+        attr_form = QFormLayout()
+        attr_form.setLabelAlignment(ALIGN_RIGHT)
+        self._lbl_area   = QLabel('—')
+        self._lbl_avdist = QLabel('—')
+        self._lbl_peak   = QLabel('—')
+        attr_form.addRow('Catchment area =',       self._lbl_area)
+        attr_form.addRow('Average flow distance =', self._lbl_avdist)
+        attr_form.addRow('Maximum peak flow =',     self._lbl_peak)
+        attr_lay.addLayout(attr_form)
+
+        user_row = QHBoxLayout()
+        self._chk_user_peak = QCheckBox('User-supplied max flow')
+        self._chk_user_peak.stateChanged.connect(
+            lambda s: self._spn_user_peak.setEnabled(bool(s)))
+        user_row.addWidget(self._chk_user_peak)
+        self._spn_user_peak = QDoubleSpinBox()
+        self._spn_user_peak.setRange(0, 1e9)
+        self._spn_user_peak.setDecimals(1)
+        self._spn_user_peak.setValue(0.0)
+        self._spn_user_peak.setFixedWidth(100)
+        self._spn_user_peak.setEnabled(False)
+        self._spn_user_peak.setSuffix(' m³/s')
+        user_row.addWidget(self._spn_user_peak)
+        user_row.addStretch()
+        attr_lay.addLayout(user_row)
+
+        note = QLabel('* or other function of reach properties related to travel time')
+        note.setStyleSheet('color: grey; font-size: 8pt;')
+        attr_lay.addWidget(note)
+        root.addWidget(grp_attr)
+
+        # ── Default (RORB Manual Eqn 2.5) ───────────────────────────────────
+        grp_default = QGroupBox('Default  (Eqn 2.5  Rorb Manual)')
+        def_lay = QFormLayout(grp_default)
+        def_lay.setLabelAlignment(ALIGN_RIGHT)
+        def_row = QHBoxLayout()
+        self._lbl_kc_default = QLabel('—')
+        def_row.addWidget(self._lbl_kc_default)
+        def_row.addStretch()
+        btn_adopt_def = QPushButton('Adopt')
+        btn_adopt_def.setFixedWidth(70)
+        btn_adopt_def.clicked.connect(self._adopt_default)
+        def_row.addWidget(btn_adopt_def)
+        def_lay.addRow('kc  =', def_row)
+        root.addWidget(grp_default)
+
+        # ── Regional ─────────────────────────────────────────────────────────
+        grp_reg = QGroupBox('Regional')
+        reg_lay = QVBoxLayout(grp_reg)
+
+        self._reg_combo = QComboBox()
+        for label, *_ in _REGIONAL_KC_EQNS:
+            self._reg_combo.addItem(label)
+        self._reg_combo.currentIndexChanged.connect(self._refresh_regional)
+        reg_lay.addWidget(self._reg_combo)
+
+        self._lbl_reg_formula = QLabel('')
+        self._lbl_reg_formula.setStyleSheet('color: #555; font-style: italic;')
+        reg_lay.addWidget(self._lbl_reg_formula)
+
+        reg_form = QFormLayout()
+        reg_form.setLabelAlignment(ALIGN_RIGHT)
+        reg_row = QHBoxLayout()
+        self._lbl_kc_reg = QLabel('—')
+        reg_row.addWidget(self._lbl_kc_reg)
+        reg_row.addStretch()
+        btn_adopt_reg = QPushButton('Adopt')
+        btn_adopt_reg.setFixedWidth(70)
+        btn_adopt_reg.clicked.connect(self._adopt_regional)
+        reg_row.addWidget(btn_adopt_reg)
+        reg_form.addRow('kc  =', reg_row)
+        reg_lay.addLayout(reg_form)
+        root.addWidget(grp_reg)
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_help = QPushButton('Help')
+        btn_help.clicked.connect(self._on_help)
+        btn_row.addWidget(btn_help)
+        btn_row.addStretch()
+        btn_close = QPushButton('Close')
+        btn_close.clicked.connect(self.close)
+        btn_row.addWidget(btn_close)
+        root.addLayout(btn_row)
+
+    def _current_area(self):
+        idx = self._isa_combo.currentIndex()
+        return self._areas_km2[idx] if 0 <= idx < len(self._areas_km2) else None
+
+    def _current_avdist(self):
+        idx = self._isa_combo.currentIndex()
+        return self._av_dists_km[idx] if 0 <= idx < len(self._av_dists_km) else None
+
+    def _refresh(self):
+        area   = self._current_area()
+        avdist = self._current_avdist()
+        peak   = self._peak_m3s
+
+        self._lbl_area.setText(f'{area:.1f} km²' if area is not None else '—')
+        self._lbl_avdist.setText(f'{avdist:.2f} km*' if avdist is not None else '—')
+        self._lbl_peak.setText(f'{peak:.1f} m³/s' if peak is not None else '—')
+
+        if area and area > 0:
+            self._lbl_kc_default.setText(f'{2.2 * (area ** 0.5):.2f}')
+        else:
+            self._lbl_kc_default.setText('—')
+
+        self._refresh_regional()
+
+    def _refresh_regional(self):
+        idx = self._reg_combo.currentIndex()
+        if not (0 <= idx < len(_REGIONAL_KC_EQNS)):
+            return
+        _, ftype, coeff, exp, alim = _REGIONAL_KC_EQNS[idx]
+
+        if ftype == 'Dav':
+            self._lbl_reg_formula.setText(f'kc = {coeff} * Dav')
+            avdist = self._current_avdist()
+            if avdist is not None and avdist > 0:
+                self._lbl_kc_reg.setText(f'{coeff * avdist:.2f}')
+            else:
+                self._lbl_kc_reg.setText('— (no Dav)')
+        else:
+            self._lbl_reg_formula.setText(f'kc = {coeff} × A^{exp}')
+            area = self._current_area()
+            if area and area > 0:
+                if alim is not None and area > alim:
+                    self._lbl_kc_reg.setText(f'N/A (A > {alim:.0f} km²)')
+                else:
+                    self._lbl_kc_reg.setText(f'{coeff * (area ** exp):.2f}')
+            else:
+                self._lbl_kc_reg.setText('—')
+
+    def _adopt_default(self):
+        area = self._current_area()
+        if area and area > 0:
+            self.kc_adopted.emit(self._isa_combo.currentIndex(), 2.2 * (area ** 0.5))
+
+    def _adopt_regional(self):
+        idx = self._reg_combo.currentIndex()
+        if not (0 <= idx < len(_REGIONAL_KC_EQNS)):
+            return
+        _, ftype, coeff, exp, alim = _REGIONAL_KC_EQNS[idx]
+
+        if ftype == 'Dav':
+            avdist = self._current_avdist()
+            if avdist is not None and avdist > 0:
+                self.kc_adopted.emit(self._isa_combo.currentIndex(), coeff * avdist)
+        else:
+            area = self._current_area()
+            if area and area > 0 and (alim is None or area <= alim):
+                self.kc_adopted.emit(self._isa_combo.currentIndex(), coeff * (area ** exp))
+
+    def _on_help(self):
+        QMessageBox.information(
+            self, 'Kc Equations',
+            'Default (Eqn 2.5 RORB Manual):\n'
+            '  kc = 2.2 × √A\n\n'
+            'Area-based regional equations:\n'
+            '  kc = coeff × A^exponent\n'
+            '  where A = catchment area (km²)\n\n'
+            'Dav-based regional equations (area-standardised lag):\n'
+            '  kc = coeff × Dav\n'
+            '  where Dav = average flow distance (km)\n\n'
+            'Source: ARR Book 7 (2019), Section 6.2.1–6.2.2')
 
 
 # ── ASCII-safe path helpers ──────────────────────────────────────────────────
@@ -725,7 +952,8 @@ class _EnsembleWorker(QThread):
 
     def __init__(self, exe, catg_path, depths_csv, rinc_csv, hub_txt,
                  aep_list, dur_min_list, out_dir, stm_dir=None,
-                 lumped=True, verbosity=None, lossmodel=None, areas_params=None):
+                 lumped=True, verbosity=None, lossmodel=None, areas_params=None,
+                 arf_area_km2=None):
         super().__init__()
         self.exe = exe
         self.catg_path = catg_path
@@ -740,6 +968,7 @@ class _EnsembleWorker(QThread):
         self.verbosity = verbosity
         self.lossmodel = lossmodel
         self.areas_params = areas_params
+        self.arf_area_km2 = arf_area_km2  # override area for ARF calc (None = use catg total)
         self._stop = False
 
     def stop(self):
@@ -788,6 +1017,8 @@ class _EnsembleWorker(QThread):
         _catg_areas = parse_catg_areas(catg_ws)
         area_km2 = sum(a['area_km2'] for a in _catg_areas)
         n_subareas = max(1, len(_catg_areas))
+        # arf_area: area used for ARF calculation (may be overridden by user)
+        arf_area = self.arf_area_km2 if self.arf_area_km2 else area_km2
 
         # Restrict to durations that appear in both CSVs
         common_durs = sorted(
@@ -808,7 +1039,7 @@ class _EnsembleWorker(QThread):
                 depth_mm = depths.get(dur_min, {}).get(aep)
                 if depth_mm is None:
                     continue
-                arf = _arr.calc_arf(arf_params, dur_min, area_km2,
+                arf = _arr.calc_arf(arf_params, dur_min, arf_area,
                                     _arr.aep_label_to_fraction(aep))
                 key = (dur_min, cls)
                 pats = sorted(patterns.get(key, []), key=lambda x: x[0])  # sort by EventID
@@ -859,7 +1090,7 @@ class _EnsembleWorker(QThread):
                 aep=aep,
                 dur_display_str=_arr.dur_display(dur_min),
                 tp_num=tp_num,
-                area_km2=area_km2,
+                area_km2=arf_area,
                 n_subareas=n_subareas,
             )
             write_par_file(par_path, catg_ws, stm_path,
@@ -1167,6 +1398,9 @@ class RorbRunDialog(QDialog):
 
         self._run_mode = 'text'       # 'text' or 'plot'
         self._storm_mode = 'stm'      # 'stm' or 'arr2016'
+        self._run_setup = None        # setup snapshot captured at run start
+        self._calc_order_rows = []    # Code 7 rows for Suggest Kc av. dist lookup
+        self._last_peak_m3s = None    # peak flow from last successful single run
 
         self._setup_ui()
         self._restore_settings()
@@ -1200,6 +1434,8 @@ class RorbRunDialog(QDialog):
         s.setValue('temporal_path', self.txt_temporal.text())
         s.setValue('stm_dir', self.txt_stm_dir.text())
         s.setValue('stm_input_folder', self.txt_stm_input_folder.text())
+        s.setValue('arf_area_override', self.chk_arf_area.isChecked())
+        s.setValue('arf_area_km2',      self.spn_arf_area.value())
         s.setValue('storm_mode', self._storm_mode)
         s.setValue('aep_from', self.cmb_aep_from.currentText())
         s.setValue('aep_to', self.cmb_aep_to.currentText())
@@ -1216,6 +1452,9 @@ class RorbRunDialog(QDialog):
         _set(self.txt_ifd, 'ifd_path')
         _set(self.txt_temporal, 'temporal_path')
         _set(self.txt_stm_dir, 'stm_dir')
+        self.chk_arf_area.setChecked(s.value('arf_area_override', False, type=bool))
+        self.spn_arf_area.setValue(s.value('arf_area_km2', 0.0, type=float))
+        self.spn_arf_area.setEnabled(self.chk_arf_area.isChecked())
 
         # Restore exe path (prefer auto-detect if saved path no longer exists)
         saved_exe = s.value('exe_path', '')
@@ -1382,6 +1621,7 @@ class RorbRunDialog(QDialog):
             rows, missing = parse_catg_calc_order(path)
         except Exception:
             return
+        self._calc_order_rows = rows
 
         # Only show Code 7 (print) rows — they're the only ones with name + av. dist.
         print_rows = [row for row in rows if row['code_str'] == '7']
@@ -1436,6 +1676,17 @@ class RorbRunDialog(QDialog):
         scroll.setWidget(inner)
         vlay = QVBoxLayout(inner)
         vlay.setSpacing(8)
+
+        # Setup save / load
+        setup_row = QHBoxLayout()
+        btn_save_setup = QPushButton('Save setup…')
+        btn_save_setup.clicked.connect(self._save_setup)
+        setup_row.addWidget(btn_save_setup)
+        btn_load_setup = QPushButton('Load setup…')
+        btn_load_setup.clicked.connect(self._load_setup)
+        setup_row.addWidget(btn_load_setup)
+        setup_row.addStretch()
+        vlay.addLayout(setup_row)
 
         # RORB Executable + Output folder
         grp_exe = QGroupBox('RORB Executable')
@@ -1569,6 +1820,24 @@ class RorbRunDialog(QDialog):
         row_stm_dir.addWidget(btn_stm_dir)
         arr_form.addRow('.stm folder (optional):', row_stm_dir)
 
+        # ARF area override
+        arf_row = QHBoxLayout()
+        self.chk_arf_area = QCheckBox('Replace total catchment area with value of')
+        self.chk_arf_area.stateChanged.connect(
+            lambda s: self.spn_arf_area.setEnabled(bool(s)))
+        arf_row.addWidget(self.chk_arf_area)
+        self.spn_arf_area = QDoubleSpinBox()
+        self.spn_arf_area.setRange(0, 999999)
+        self.spn_arf_area.setDecimals(2)
+        self.spn_arf_area.setValue(0.0)
+        self.spn_arf_area.setFixedWidth(100)
+        self.spn_arf_area.setSuffix(' km²')
+        self.spn_arf_area.setEnabled(False)
+        arf_row.addWidget(self.spn_arf_area)
+        arf_row.addWidget(QLabel('(for ARF only)'))
+        arf_row.addStretch()
+        arr_form.addRow('ARF area:', arf_row)
+
         self.wdg_arr.setVisible(False)
         storm_v.addWidget(self.wdg_arr)
 
@@ -1657,7 +1926,7 @@ class RorbRunDialog(QDialog):
         vlay = QVBoxLayout(w)
         vlay.setSpacing(8)
 
-        # Save / Load buttons
+        # Save / Load / Suggest buttons
         io_row = QHBoxLayout()
         btn_save_p = QPushButton('Save parameters…')
         btn_save_p.clicked.connect(self._save_params)
@@ -1666,6 +1935,11 @@ class RorbRunDialog(QDialog):
         btn_load_p.clicked.connect(self._load_params)
         io_row.addWidget(btn_load_p)
         io_row.addStretch()
+        self.btn_suggest_kc = QPushButton('??')
+        self.btn_suggest_kc.setFixedWidth(32)
+        self.btn_suggest_kc.setToolTip('Suggest Kc values from regional equations (ARR Book 7)')
+        self.btn_suggest_kc.clicked.connect(self._open_suggest_kc)
+        io_row.addWidget(self.btn_suggest_kc)
         vlay.addLayout(io_row)
 
         # Global kc / m (lumped mode only)
@@ -2010,6 +2284,54 @@ class RorbRunDialog(QDialog):
             except (ValueError, TypeError):
                 pass
 
+    def _open_suggest_kc(self):
+        lumped = self.rd_param_single.isChecked()
+        total_area = sum(a['area_km2'] for a in self._areas)
+
+        # Build per-row label, area, and av_dist lists
+        if lumped:
+            row_labels = [f'#{i+1:02d}: {name}' for i, name in enumerate(self._isa_names)]
+            areas_km2  = []
+            for name in self._isa_names:
+                # Approximate: equal share of total area per ISA group
+                areas_km2.append(total_area / max(1, len(self._isa_names)))
+        else:
+            row_labels = [f'#{i+1:02d}: {a["name"]}' for i, a in enumerate(self._areas)]
+            areas_km2  = [a['area_km2'] for a in self._areas]
+
+        # Match av_dist_km from calc order Code 7 rows by name
+        code7 = [r for r in self._calc_order_rows if r['code_str'] == '7']
+        av_dists_km = []
+        names_to_match = (self._isa_names if lumped
+                          else [a['name'] for a in self._areas])
+        for name in names_to_match:
+            dist = next(
+                (r['av_dist_km'] for r in code7
+                 if r['name'] == name and r['av_dist_km'] is not None),
+                None)
+            # Fallback: outlet (last Code 7 with a distance)
+            if dist is None:
+                dist = next(
+                    (r['av_dist_km'] for r in reversed(code7)
+                     if r['av_dist_km'] is not None),
+                    None)
+            av_dists_km.append(dist)
+
+        dlg = SuggestKcDialog(
+            self, row_labels, areas_km2, av_dists_km,
+            peak_m3s=self._last_peak_m3s)
+        dlg.kc_adopted.connect(self._on_kc_adopted)
+        dlg.exec()
+
+    def _on_kc_adopted(self, row_idx, kc_value):
+        lumped = self.rd_param_single.isChecked()
+        if lumped:
+            self.spn_kc_global.setValue(kc_value)
+        else:
+            w = self.table_areas.cellWidget(row_idx, 1)
+            if w:
+                w.setValue(kc_value)
+
     def _collect_area_params(self):
         lumped = self.rd_param_single.isChecked()
         kc0 = self.spn_kc_global.value() if lumped else None
@@ -2022,6 +2344,222 @@ class RorbRunDialog(QDialog):
             cl = self.table_areas.cellWidget(row, 4).value()
             params.append({'kc': kc, 'm': m, 'il': il, 'cl': cl})
         return params
+
+    # ── Setup save / load ────────────────────────────────────────────────────
+
+    def _collect_setup(self):
+        """Return all current dialog settings as a serialisable dict."""
+        lumped = self.rd_param_single.isChecked()
+        isa_params = []
+        for row in range(self.table_areas.rowCount()):
+            name = (self.table_areas.item(row, 0).text()
+                    if self.table_areas.item(row, 0) else f'Row{row+1}')
+            kc_w = self.table_areas.cellWidget(row, 1)
+            m_w  = self.table_areas.cellWidget(row, 2)
+            il_w = self.table_areas.cellWidget(row, 3)
+            cl_w = self.table_areas.cellWidget(row, 4)
+            isa_params.append({
+                'name': name,
+                'kc':   kc_w.value() if kc_w else 1.5,
+                'm':    m_w.value()  if m_w  else 0.8,
+                'il':   il_w.value() if il_w else 20.0,
+                'cl':   cl_w.value() if cl_w else 2.5,
+            })
+        return {
+            'exe_path':       self.txt_exe.text().strip(),
+            'out_dir':        self.txt_out_dir.text().strip(),
+            'catg_path':      self.txt_catg.text().strip(),
+            'storm_mode':     self._storm_mode,
+            'stm_path':       self.txt_stm.text().strip(),
+            'stm_folder':     self.txt_stm_input_folder.text().strip(),
+            'hub_path':       self.txt_hub.text().strip(),
+            'ifd_path':       self.txt_ifd.text().strip(),
+            'temporal_path':  self.txt_temporal.text().strip(),
+            'stm_dir':        self.txt_stm_dir.text().strip(),
+            'arf_area_override': self.chk_arf_area.isChecked(),
+            'arf_area_km2':      self.spn_arf_area.value(),
+            'aep_from':       self.cmb_aep_from.currentText(),
+            'aep_to':         self.cmb_aep_to.currentText(),
+            'dur_from':       self.cmb_dur_from.currentText(),
+            'dur_to':         self.cmb_dur_to.currentText(),
+            'routing_lumped': lumped,
+            'loss_ilcl':      self.rd_loss_ilcl.isChecked(),
+            'verbosity_index': self.cmb_info_detail.currentIndex(),
+            'text_csv':       self.chk_text_csv.isChecked(),
+            'kc_global':      self.spn_kc_global.value(),
+            'm_global':       self.spn_m_global.value(),
+            'isa_params':     isa_params,
+        }
+
+    def _apply_setup(self, d):
+        """Apply a setup dict to all dialog widgets."""
+        def _set(w, key):
+            v = d.get(key, '')
+            if v:
+                w.setText(v)
+
+        _set(self.txt_exe,              'exe_path')
+        _set(self.txt_out_dir,          'out_dir')
+        _set(self.txt_stm,              'stm_path')
+        _set(self.txt_stm_input_folder, 'stm_folder')
+        _set(self.txt_hub,              'hub_path')
+        _set(self.txt_ifd,              'ifd_path')
+        _set(self.txt_temporal,         'temporal_path')
+        _set(self.txt_stm_dir,          'stm_dir')
+        self.chk_arf_area.setChecked(d.get('arf_area_override', False))
+        self.spn_arf_area.setValue(d.get('arf_area_km2', 0.0))
+        self.spn_arf_area.setEnabled(self.chk_arf_area.isChecked())
+
+        catg = d.get('catg_path', '')
+        if catg and os.path.isfile(catg):
+            self.txt_catg.setText(catg)
+            self._load_catg(catg)
+
+        mode = d.get('storm_mode', 'stm')
+        if mode == 'arr2016':
+            self.rd_arr2016.setChecked(True)
+        elif mode == 'stm_folder':
+            self.rd_stm_folder.setChecked(True)
+        else:
+            self.rd_stm.setChecked(True)
+        self._on_storm_mode_changed()
+
+        if d.get('routing_lumped', True):
+            self.rd_param_single.setChecked(True)
+        else:
+            self.rd_param_vary.setChecked(True)
+        self._on_param_mode_changed()
+
+        if d.get('loss_ilcl', True):
+            self.rd_loss_ilcl.setChecked(True)
+        else:
+            self.rd_loss_rc.setChecked(True)
+
+        vi = d.get('verbosity_index', 0)
+        if 0 <= vi < self.cmb_info_detail.count():
+            self.cmb_info_detail.setCurrentIndex(vi)
+        self.chk_text_csv.setChecked(d.get('text_csv', False))
+
+        self.spn_kc_global.setValue(d.get('kc_global', 1.5))
+        self.spn_m_global.setValue(d.get('m_global', 0.8))
+
+        lumped = d.get('routing_lumped', True)
+        for i, p in enumerate(d.get('isa_params', [])):
+            if i >= self.table_areas.rowCount():
+                break
+            if not lumped:
+                w = self.table_areas.cellWidget(i, 1)
+                if w: w.setValue(p.get('kc', 1.5))
+                w = self.table_areas.cellWidget(i, 2)
+                if w: w.setValue(p.get('m', 0.8))
+            w = self.table_areas.cellWidget(i, 3)
+            if w: w.setValue(p.get('il', 20.0))
+            w = self.table_areas.cellWidget(i, 4)
+            if w: w.setValue(p.get('cl', 2.5))
+
+        for cmb, key in [(self.cmb_aep_from, 'aep_from'), (self.cmb_aep_to, 'aep_to'),
+                         (self.cmb_dur_from, 'dur_from'), (self.cmb_dur_to, 'dur_to')]:
+            v = d.get(key, '')
+            if v and cmb.findText(v) >= 0:
+                cmb.setCurrentText(v)
+
+        self._update_exe_status()
+
+    def _save_setup(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save setup', '', 'RORB setup (*.json)')
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._collect_setup(), f, indent=2)
+        except OSError as e:
+            QMessageBox.warning(self, 'Save failed', str(e))
+
+    def _load_setup(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Load setup', '', 'RORB setup (*.json)')
+        if not path:
+            return
+        try:
+            with open(path, encoding='utf-8') as f:
+                d = json.load(f)
+            self._apply_setup(d)
+        except Exception as e:
+            QMessageBox.warning(self, 'Load failed', str(e))
+
+    # ── Run log writer ───────────────────────────────────────────────────────
+
+    def _write_run_log(self, out_dir, result_line):
+        """Write a rorb_run_<timestamp>.log into out_dir."""
+        if not out_dir:
+            return
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError:
+            return
+
+        d = self._run_setup or self._collect_setup()
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+
+        lines = [
+            'RORB Run Log',
+            '=' * 60,
+            f'Run date/time  : {ts}',
+            f'RORB_CMD.exe   : {d["exe_path"]}',
+            '',
+            'Input Files',
+            '-' * 40,
+            f'Catchment file : {d["catg_path"]}',
+        ]
+
+        mode = d['storm_mode']
+        if mode == 'stm':
+            lines.append(f'Storm file     : {d["stm_path"]}')
+        elif mode == 'arr2016':
+            lines.append('Storm mode     : ARR2016 ensemble')
+            lines.append(f'IFD depths     : {d["ifd_path"]}')
+            lines.append(f'Temporal pats  : {d["temporal_path"]}')
+            if d.get('hub_path'):
+                lines.append(f'ARR Data Hub   : {d["hub_path"]}')
+            lines.append(f'AEP range      : {d["aep_from"]} – {d["aep_to"]}')
+            lines.append(f'Duration range : {d["dur_from"]} – {d["dur_to"]}')
+            if d.get('stm_dir'):
+                lines.append(f'.stm folder    : {d["stm_dir"]}')
+        elif mode == 'stm_folder':
+            lines.append('Storm mode     : Batch .stm folder')
+            lines.append(f'.stm folder    : {d["stm_folder"]}')
+
+        lines.append(f'Output folder  : {out_dir}')
+        lines += [
+            '',
+            'Parameters',
+            '-' * 40,
+            f'Routing        : {"Lumped (single kc/m)" if d["routing_lumped"] else "Non-lumped (per interstation area)"}',
+            f'Loss model     : {"Initial loss / Continuing loss" if d["loss_ilcl"] else "Runoff coefficient"}',
+        ]
+        if d['routing_lumped']:
+            lines.append(f'kc             : {d["kc_global"]:.4f}')
+            lines.append(f'm              : {d["m_global"]:.4f}')
+
+        lines += ['', 'ISA Parameters', '-' * 40,
+                  f'  {"Area":<22}  {"kc":>7}  {"m":>7}  {"IL (mm)":>8}  {"CL (mm/h)":>9}']
+        for p in d.get('isa_params', []):
+            kc = d['kc_global'] if d['routing_lumped'] else p['kc']
+            m  = d['m_global']  if d['routing_lumped'] else p['m']
+            lines.append(
+                f'  {p["name"]:<22}  {kc:>7.4f}  {m:>7.4f}  {p["il"]:>8.2f}  {p["cl"]:>9.2f}')
+
+        lines += ['', 'Run Result', '-' * 40, result_line]
+
+        log_name = f'rorb_run_{time.strftime("%Y%m%d_%H%M%S")}.log'
+        log_path = os.path.join(out_dir, log_name)
+        try:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+            self._log('info', f'Run log: {log_path}')
+        except OSError as e:
+            self._log('warn', f'Could not write run log: {e}')
 
     # ── Run dispatch ──────────────────────────────────────────────────────────
 
@@ -2112,6 +2650,7 @@ class RorbRunDialog(QDialog):
         if self._staging_dir:
             self._original_output_dir = os.path.dirname(catg_abs)
 
+        self._run_setup = self._collect_setup()
         since_ts = time.time() - 1
         self._worker = _RunWorker(exe, par_path, watch_dir, since_ts)
         self._worker.done.connect(
@@ -2161,10 +2700,22 @@ class RorbRunDialog(QDialog):
 
         if ok:
             self._last_out_file = out_file
+            # Store peak flow for the Suggest Kc dialog
+            if out_file and os.path.isfile(out_file):
+                try:
+                    from . import arr2016_runner as _arr_r
+                    peaks = _arr_r.parse_all_peaks(out_file)
+                    if peaks:
+                        self._last_peak_m3s = max(v for _, v in peaks)
+                except Exception:
+                    pass
             self._log('pass', f'Run succeeded → {out_file}')
             self.lbl_status.setText('Run succeeded')
             self.lbl_status.setStyleSheet('color:#1a7a1a;')
             self.btn_open_results.setEnabled(True)
+            log_dir = (self.txt_out_dir.text().strip()
+                       or (os.path.dirname(out_file) if out_file else ''))
+            self._write_run_log(log_dir, f'Result         : Success → {out_file}')
             if self._run_mode == 'plot':
                 self._open_in_results()
         else:
@@ -2172,6 +2723,9 @@ class RorbRunDialog(QDialog):
             self._log('fail', 'Run failed or produced no output — see log above.')
             self.lbl_status.setText('Run failed')
             self.lbl_status.setStyleSheet('color:#c0392b;')
+            log_dir = (self.txt_out_dir.text().strip()
+                       or os.path.dirname(self.txt_catg.text().strip()))
+            self._write_run_log(log_dir, 'Result         : Failed')
 
     # ── .stm folder batch run ────────────────────────────────────────────────
 
@@ -2215,6 +2769,7 @@ class RorbRunDialog(QDialog):
         self.btn_stop.setEnabled(True)
         self.tabs.setCurrentIndex(4)
 
+        self._run_setup = self._collect_setup()
         self._last_out_folder = out_dir
         stm_count = sum(1 for f in os.listdir(stm_folder) if f.lower().endswith('.stm'))
         self._log('info', f'Starting batch: {stm_count} .stm file(s) in {stm_folder}')
@@ -2303,11 +2858,16 @@ class RorbRunDialog(QDialog):
         self.btn_stop.setEnabled(True)
         self.tabs.setCurrentIndex(4)  # Switch to Log tab
 
+        self._run_setup = self._collect_setup()
         self._last_out_folder = out_dir
         self._log('info', f'Starting ensemble: {len(selected_aeps)} AEPs x '
                   f'{len(selected_durs)} durations')
 
         stm_dir = self.txt_stm_dir.text().strip() or out_dir
+
+        arf_area_km2 = (self.spn_arf_area.value()
+                        if self.chk_arf_area.isChecked() and self.spn_arf_area.value() > 0
+                        else None)
 
         self._ens_worker = _EnsembleWorker(
             exe=exe, catg_path=catg,
@@ -2316,6 +2876,7 @@ class RorbRunDialog(QDialog):
             out_dir=out_dir, stm_dir=stm_dir,
             lumped=lumped, verbosity=verbosity, lossmodel=lossmodel,
             areas_params=areas_params,
+            arf_area_km2=arf_area_km2,
         )
         self._ens_worker.progress.connect(self._on_ens_progress)
         self._ens_worker.done.connect(self._on_ens_done)
@@ -2337,6 +2898,7 @@ class RorbRunDialog(QDialog):
         self.btn_stop.setText('Stop')
         self.btn_run_text.setVisible(True)
         self.btn_run_plot.setVisible(False)  # stays hidden in ensemble mode
+        result_line = f'Result         : {n_ok}/{n_total} runs succeeded'
         if ok:
             msg = f'Ensemble complete: {n_ok}/{n_total} runs succeeded'
             self.lbl_status.setText(msg)
@@ -2346,6 +2908,7 @@ class RorbRunDialog(QDialog):
             msg = f'Ensemble failed: {n_ok}/{n_total} runs succeeded'
             self.lbl_status.setText(msg)
             self.lbl_status.setStyleSheet('color:#c0392b;')
+        self._write_run_log(self._last_out_folder or '', result_line)
 
     # ── Hand-off to Results Viewer / Explorer ────────────────────────────────
 
