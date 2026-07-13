@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.12
+version=2.13
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,9 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.13: Run RORB: fix Parameters table in non-lumped (vary) mode — rows now show
+    ISA groups (matching RORBwin's Parameter Specification dialog) instead of
+    individual sub-areas.
 v2.12: Run RORB: add "Suggest Kc" helper dialog — choose a regional equation
     (ARR Book 7 area-based or Dav-based Pearse et al.) or the RORB Manual
     default (2.2 × √A) to compute a starting kc for the selected ISA group,

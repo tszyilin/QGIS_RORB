@@ -2206,10 +2206,7 @@ class RorbRunDialog(QDialog):
             if w_cl:
                 prev_cl = w_cl.value()
 
-        if lumped:
-            rows = [{'name': name} for name in self._isa_names]
-        else:
-            rows = [{'name': a['name']} for a in self._areas] or [{'name': 'ISA 1'}]
+        rows = [{'name': name} for name in self._isa_names] or [{'name': 'ISA 1'}]
         self.table_areas.setRowCount(len(rows))
         for row, area in enumerate(rows):
             name_item = QTableWidgetItem(f'#{row + 1:02d}: {area["name"]}')
