@@ -288,6 +288,9 @@ class RorbResultsDialog(QDockWidget):
         self._file_table.horizontalHeader().setSectionResizeMode(HeaderStretch)
         self._file_table.setEditTriggers(NoEditTriggers)
         self._file_table.setAlternatingRowColors(True)
+        self._file_table.setContextMenuPolicy(CustomContextMenu)
+        self._file_table.customContextMenuRequested.connect(
+            self._file_table_context_menu)
         lay.addWidget(self._file_table)
         return w
 
@@ -300,7 +303,9 @@ class RorbResultsDialog(QDockWidget):
                 si = QTableWidgetItem(sname)
                 si.setForeground(QColor(self._scenario_color(sname)))
                 self._file_table.setItem(row, 0, si)
-                self._file_table.setItem(row, 1, QTableWidgetItem(e['fname']))
+                fname_it = QTableWidgetItem(e['fname'])
+                fname_it.setData(UserRole, e.get('path', ''))
+                self._file_table.setItem(row, 1, fname_it)
                 p = e.get('parsed')
                 if p:
                     aep, dur_label, _, tp = p
@@ -448,6 +453,39 @@ class RorbResultsDialog(QDockWidget):
             self._crit_ax2.set_yticks([])
             self._crit_ax2.set_ylabel("")
         self._crit_canvas.draw()
+
+    def _file_table_context_menu(self, pos):
+        from qgis.PyQt.QtWidgets import QMenu
+        from qgis.PyQt.QtGui import QDesktopServices
+        from qgis.PyQt.QtCore import QUrl
+
+        row = self._file_table.indexAt(pos).row()
+        if row < 0:
+            return
+        fname_it = self._file_table.item(row, 1)
+        out_path = fname_it.data(UserRole) if fname_it else ''
+        if not out_path:
+            return
+        stm_path = os.path.splitext(out_path)[0] + '.stm'
+
+        menu = QMenu(self._file_table)
+        act_out = menu.addAction(
+            f"Open .out  ({os.path.basename(out_path)})" if out_path else "Open .out")
+        act_out.setEnabled(bool(out_path) and os.path.exists(out_path))
+        act_stm = menu.addAction(
+            f"Open .stm  ({os.path.basename(stm_path)})" if stm_path else "Open .stm")
+        act_stm.setEnabled(bool(stm_path) and os.path.exists(stm_path))
+        menu.addSeparator()
+        act_dir = menu.addAction("Open containing folder")
+        act_dir.setEnabled(bool(out_path))
+
+        action = menu.exec(self._file_table.viewport().mapToGlobal(pos))
+        if action == act_out and os.path.exists(out_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(out_path))
+        elif action == act_stm and os.path.exists(stm_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(stm_path))
+        elif action == act_dir and out_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out_path)))
 
     def _crit_table_context_menu(self, pos):
         from qgis.PyQt.QtWidgets import QMenu

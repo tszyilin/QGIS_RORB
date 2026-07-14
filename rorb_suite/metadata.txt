@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.19
+version=2.20
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,11 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.20: Run RORB: fix areal temporal pattern standard-area selection — now uses
+    total catchment area to select the appropriate standard area from the CSV
+    (was a NameError at runtime). Results Viewer: Files tab now supports
+    right-click to open .out, .stm, or containing folder — matching Critical
+    Events and Export tabs.
 v2.19: Run RORB: fix "No runs" with Areal_R_Increments.csv — detect the Areal
     temporal pattern format (numeric Area column instead of AEP class) and
     make all patterns available for any AEP. Generated .stm files now correctly

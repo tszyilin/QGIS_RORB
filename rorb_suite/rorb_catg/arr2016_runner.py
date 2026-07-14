@@ -147,19 +147,26 @@ def load_depths(csv_path):
 
 def load_patterns(csv_path):
     """
-    Return ({(dur_min, aep_class): [(event_id, ts_min, [frac,...]), ...]}, standard_area_km2).
+    Return ({(dur_min, key): [(event_id, ts_min, [frac,...]), ...]}, areal_areas).
 
     Two formats from the ARR2016 Data Hub:
       Standard  R_Increments.csv : EventID, Duration, TimeStep, Region, AEP,  Inc1, ...
       Areal     R_Increments.csv : EventID, Duration, TimeStep, Region, Area, Inc1, ...
 
-    Areal format: col-4 is numeric (standard area in km², e.g. 100) — no AEP class.
-    Areal patterns apply to all AEP classes; stored under sentinel key '_areal_'.
-    Returns (patterns_dict, standard_area_km2) where standard_area_km2 is None for
-    the standard format.
+    Areal format: col-4 is numeric (standard area in km²).  The file may contain
+    patterns for multiple standard areas (e.g. 100, 500, 1000, 5000 km²).  Patterns
+    are keyed by (dur_min, area_float) so the caller can select the appropriate
+    standard area for the catchment via select_standard_area().
+
+    Returns:
+      patterns    - dict keyed by (dur_min, aep_str) for standard, or
+                    (dur_min, area_float) for areal format.
+      areal_areas - sorted list of available standard area values, or None for
+                    standard format.
     """
     patterns = defaultdict(list)
-    standard_area = None
+    areal_areas_set = set()
+    is_areal = None
 
     with open(csv_path, encoding='utf-8') as f:
         lines = f.readlines()
@@ -178,19 +185,33 @@ def load_patterns(csv_path):
         col4 = parts[4]
         try:
             area = float(col4)
-            # Numeric col-4 → Areal format (col4 = standard area, no AEP class column)
-            if standard_area is None:
-                standard_area = area
+            is_areal = True
+            areal_areas_set.add(area)
             fracs = [float(p) for p in parts[5:] if p.strip()]
             if fracs:
-                patterns[(dur_min, '_areal_')].append((event_id, ts_min, fracs))
+                patterns[(dur_min, area)].append((event_id, ts_min, fracs))
         except ValueError:
-            # String col-4 → Standard format (col4 = AEP class)
+            is_areal = False
             fracs = [float(p) for p in parts[5:] if p.strip()]
             if fracs:
                 patterns[(dur_min, col4)].append((event_id, ts_min, fracs))
 
-    return patterns, standard_area
+    areal_areas = sorted(areal_areas_set) if is_areal else None
+    return patterns, areal_areas
+
+
+def select_standard_area(available_areas, catchment_area_km2):
+    """Pick the best standard area for a given catchment area.
+
+    Returns the smallest standard area >= catchment_area_km2,
+    or the largest available if none is large enough.
+    """
+    if not available_areas:
+        return None
+    for a in sorted(available_areas):
+        if a >= catchment_area_km2:
+            return a
+    return max(available_areas)
 
 
 def load_arf_params(hub_path):

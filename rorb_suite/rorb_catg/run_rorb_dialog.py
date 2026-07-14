@@ -969,14 +969,34 @@ class _EnsembleWorker(QThread):
             self.done.emit(False, '', 0, 0)
             return
         try:
-            patterns, areal_area = _arr.load_patterns(self.rinc_csv)
+            patterns, areal_areas = _arr.load_patterns(self.rinc_csv)
         except Exception as e:
             self.progress.emit(f'[ERROR] Cannot load temporal patterns: {e}')
             self.done.emit(False, '', 0, 0)
             return
-        is_areal = areal_area is not None
+        # Catchment area for ARF and ISA count for .stm sub-area depths
+        _catg_areas = parse_catg_areas(catg_ws)
+        area_km2 = sum(a['area_km2'] for a in _catg_areas)
+        n_subareas = max(1, len(_catg_areas))
+        # arf_area: area used for ARF calculation (may be overridden by user)
+        arf_area = self.arf_area_km2 if self.arf_area_km2 else area_km2
+
+        is_areal = areal_areas is not None
+        areal_area = None
         if is_areal:
-            self.progress.emit(f'[INFO] Areal temporal patterns detected (standard area = {areal_area:.0f} km\xb2)')
+            # Select the most appropriate standard area for this catchment
+            areal_area = _arr.select_standard_area(areal_areas, arf_area)
+            self.progress.emit(
+                f'[INFO] Areal temporal patterns: catchment area = {arf_area:.1f} km\xb2, '
+                f'selected standard area = {areal_area:.0f} km\xb2 '
+                f'(available: {[int(a) for a in areal_areas]})')
+            # Rebuild patterns dict keyed by (dur_min, '_areal_') for the selected area
+            from collections import defaultdict as _dd
+            sel = _dd(list)
+            for (dur, area), evts in patterns.items():
+                if area == areal_area:
+                    sel[(dur, '_areal_')] = evts
+            patterns = sel
 
         arf_params = None
         if self.hub_txt:
@@ -984,13 +1004,6 @@ class _EnsembleWorker(QThread):
                 arf_params = _arr.load_arf_params(self.hub_txt)
             except Exception:
                 pass  # ARF will be 1.0
-
-        # Catchment area for ARF and ISA count for .stm sub-area depths
-        _catg_areas = parse_catg_areas(catg_ws)
-        area_km2 = sum(a['area_km2'] for a in _catg_areas)
-        n_subareas = max(1, len(_catg_areas))
-        # arf_area: area used for ARF calculation (may be overridden by user)
-        arf_area = self.arf_area_km2 if self.arf_area_km2 else area_km2
 
         # Restrict to durations that appear in both CSVs
         common_durs = sorted(
