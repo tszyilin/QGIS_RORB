@@ -298,13 +298,11 @@ def calc_arf(arf_params, dur_min, area_km2, aep_frac=0.10):
     Short-duration ARF (≤ 12 h) uses fixed global params — no hub file needed.
     Long-duration ARF (≥ 24 h) requires arf_params from load_arf_params(); returns 1.0 if None.
 
-    RORBWin uses the actual AEP for ARF_short but fixes aep=0.10 for ARF_long calls
-    (including the long-duration anchor used in the 12–24 h interpolation).
+    Both short- and long-duration ARF use the actual design AEP, matching RORBWin behaviour.
     """
     if area_km2 <= 1.0:
         return 1.0
     aep_frac = max(0.0005, min(0.5, aep_frac))
-    _LONG_AEP = 0.10  # RORBWin fixes ARF_long at 10% AEP regardless of design AEP
 
     if dur_min <= 720:
         if area_km2 >= 10:
@@ -315,18 +313,18 @@ def calc_arf(arf_params, dur_min, area_km2, aep_frac=0.10):
         if arf_params is None:
             return 1.0
         if area_km2 >= 10:
-            return _arf_long(arf_params, area_km2, dur_min, _LONG_AEP)
-        return _arf_at_area(_arf_long(arf_params, 10.0, dur_min, _LONG_AEP), area_km2)
+            return _arf_long(arf_params, area_km2, dur_min, aep_frac)
+        return _arf_at_area(_arf_long(arf_params, 10.0, dur_min, aep_frac), area_km2)
 
-    # 720 < dur < 1440: interpolate between ARF_short(720, actual AEP) and ARF_long(1440, 10%)
+    # 720 < dur < 1440: interpolate between ARF_short(720) and ARF_long(1440)
     if arf_params is None:
         return 1.0
     if area_km2 >= 10:
         s12 = _arf_short(area_km2, 720, aep_frac)
-        l24 = _arf_long(arf_params, area_km2, 1440, _LONG_AEP)
+        l24 = _arf_long(arf_params, area_km2, 1440, aep_frac)
         return s12 + (l24 - s12) * (dur_min - 720) / 720
     s12 = _arf_short(10.0, 720, aep_frac)
-    l24 = _arf_long(arf_params, 10.0, 1440, _LONG_AEP)
+    l24 = _arf_long(arf_params, 10.0, 1440, aep_frac)
     interp_10 = s12 + (l24 - s12) * (dur_min - 720) / 720
     return _arf_at_area(interp_10, area_km2)
 

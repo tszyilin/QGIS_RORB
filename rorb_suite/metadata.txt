@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.23
+version=2.24
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,10 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.24: Run RORB: fix long-duration ARF calculation — was using a fixed 10% AEP
+    for ARF_long regardless of the design AEP, causing rare-event (1%, 2%) .stm
+    files to overestimate depth at long durations (24–168 hr). Now uses the actual
+    design AEP, matching RORBWin behaviour.
 v2.23: Run RORB: batch .out summary now shows all ISA kc/m/IL/CL in non-lumped
     mode (was only showing ISA 1 regardless); peak column headers now correctly
     list all print nodes including ungauged interstation nodes (was only listing
