@@ -815,14 +815,14 @@ def write_par_file(path, catg, stm, lumped, verbosity, lossmodel, areas_params):
 
     if lumped:
         kc, m = areas_params[0]['kc'], areas_params[0]['m']
-        lines.append(f'ISA 1    :{kc:.4f},{m:.4f}')
+        lines.append(f'ISA 1    :{kc:.3f},{m:.3f}')
     else:
         for i, p in enumerate(areas_params, 1):
-            lines.append(f'ISA {i:<5}:{p["kc"]:.4f},{p["m"]:.4f}')
+            lines.append(f'ISA {i:<5}:{p["kc"]:.3f},{p["m"]:.3f}')
 
     lines.append('Num burst:1')
     for i, p in enumerate(areas_params, 1):
-        lines.append(f'ISA {i:<5}:{p["il"]:.4f},{p["cl"]:.4f}')
+        lines.append(f'ISA {i:<5}:{p["il"]:.3f},{p["cl"]:.3f}')
 
     lines.append('# END')
     with open(path, 'w') as f:
@@ -2242,8 +2242,8 @@ class RorbRunDialog(QDialog):
 
             spn_kc = QDoubleSpinBox(); spn_kc.setRange(0, 1000); spn_kc.setDecimals(3); spn_kc.setValue(1.5)
             spn_m = QDoubleSpinBox(); spn_m.setRange(0, 5); spn_m.setDecimals(3); spn_m.setValue(0.8)
-            spn_il = QDoubleSpinBox(); spn_il.setRange(0, 1000); spn_il.setDecimals(2); spn_il.setValue(prev_il)
-            spn_cl = QDoubleSpinBox(); spn_cl.setRange(0, 1000); spn_cl.setDecimals(2); spn_cl.setValue(prev_cl)
+            spn_il = QDoubleSpinBox(); spn_il.setRange(0, 1000); spn_il.setDecimals(3); spn_il.setValue(prev_il)
+            spn_cl = QDoubleSpinBox(); spn_cl.setRange(0, 1000); spn_cl.setDecimals(3); spn_cl.setValue(prev_cl)
 
             self.table_areas.setCellWidget(row, 1, spn_kc)
             self.table_areas.setCellWidget(row, 2, spn_m)
