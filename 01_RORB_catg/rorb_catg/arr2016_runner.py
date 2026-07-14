@@ -2,6 +2,7 @@
 """Pure-Python ARR2016 data loading and RORB .stm generation (no QGIS dependency)."""
 
 import math
+import re
 import time
 from collections import defaultdict
 
@@ -33,8 +34,11 @@ def _normalize_aep_label(aep):
     """Normalise AEP label so CSV variants match the lookup tables.
 
     '63.20%' → '63.2%', '50.00%' → '50%', '1 in 10000' unchanged.
+    '1% AEP' → '1%'  (ARR Data Hub IFD CSV header format)
     """
     aep = aep.strip()
+    # Strip trailing " AEP" suffix produced by ARR Data Hub depth CSVs
+    aep = re.sub(r'\s*AEP\s*$', '', aep, flags=re.IGNORECASE).strip()
     if aep.endswith('%'):
         try:
             return f'{float(aep[:-1]):g}%'
@@ -119,8 +123,10 @@ def load_depths(csv_path):
     with open(csv_path, encoding='utf-8') as f:
         lines = f.readlines()
     header = [c.strip() for c in lines[9].split(',')]
-    aep_cols = header[2:]
-    aep_idx = {a: i + 2 for i, a in enumerate(aep_cols)}
+    aep_cols_raw = header[2:]
+    # Normalise headers: "1% AEP" → "1%", "50.00%" → "50%" etc.
+    aep_cols = [_normalize_aep_label(a) for a in aep_cols_raw]
+    aep_idx = {a_norm: i + 2 for i, a_norm in enumerate(aep_cols)}
     depths = {}
     for line in lines[10:]:
         parts = [p.strip() for p in line.split(',')]
