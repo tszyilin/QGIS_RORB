@@ -885,7 +885,10 @@ class RorbResultsDialog(QDockWidget):
         hydro_btn.setMinimumHeight(34); hydro_btn.clicked.connect(self._export_hydros)
         hyeto_btn = QPushButton("Export Hyetographs  (_rf.csv)")
         hyeto_btn.setMinimumHeight(34); hyeto_btn.clicked.connect(self._export_hyetos)
-        brow.addWidget(hydro_btn); brow.addWidget(hyeto_btn); brow.addStretch()
+        tp_btn = QPushButton("Export Temporal Patterns  (_tp.csv)")
+        tp_btn.setMinimumHeight(34); tp_btn.clicked.connect(self._export_temporal)
+        brow.addWidget(hydro_btn); brow.addWidget(hyeto_btn); brow.addWidget(tp_btn)
+        brow.addStretch()
         lay.addLayout(brow)
         return w
 
@@ -1609,3 +1612,32 @@ class RorbResultsDialog(QDockWidget):
         msg = f"Exported {len(saved)} file(s) to:\n{folder}"
         if skipped: msg += f"\n\nNo rainfall data: {', '.join(skipped)}"
         QMessageBox.information(self, "Export Hyetographs", msg)
+
+    def _export_temporal(self):
+        folder = self._exp_folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Export", "Select an output folder first."); return
+        events = self._get_export_events()
+        if not events:
+            QMessageBox.warning(self, "Export", "No events selected."); return
+        saved, skipped = [], []
+        for source, aep, dur_label, tp_num, entry in events:
+            rain_t  = entry.get('rain_t',  [])
+            rain_mm = entry.get('rain_mm', [])
+            if not rain_mm:
+                skipped.append(f"{aep} TP{tp_num}"); continue
+            total = sum(rain_mm)
+            if total == 0:
+                skipped.append(f"{aep} TP{tp_num}"); continue
+            pcts = [r / total * 100.0 for r in rain_mm]
+            stem  = self._resolve_stem(source, aep, dur_label, tp_num, entry)
+            fname = os.path.join(folder, f"{stem}_tp.csv")
+            with open(fname, 'w', newline='') as f:
+                w = csv_mod.writer(f)
+                w.writerow(["Time (hr)", "Pattern (%)"])
+                for tv, pv in zip(rain_t, pcts):
+                    w.writerow([f"{tv:.4f}", f"{pv:.4f}"])
+            saved.append(os.path.basename(fname))
+        msg = f"Exported {len(saved)} file(s) to:\n{folder}"
+        if skipped: msg += f"\n\nNo rainfall data: {', '.join(skipped)}"
+        QMessageBox.information(self, "Export Temporal Patterns", msg)
