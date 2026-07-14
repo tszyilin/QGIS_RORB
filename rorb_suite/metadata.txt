@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.22
+version=2.23
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,10 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.23: Run RORB: batch .out summary now shows all ISA kc/m/IL/CL in non-lumped
+    mode (was only showing ISA 1 regardless); peak column headers now correctly
+    list all print nodes including ungauged interstation nodes (was only listing
+    the single outlet node while printing all peak values).
 v2.22: Results Viewer: Export tab — switching scenario now clears Extra Events
     (they belong to the previous case); node combo defaults to last node (outlet)
     on first load; Extra Events table now supports right-click to open .out,

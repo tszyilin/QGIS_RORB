@@ -2,10 +2,10 @@
 <plugins>
 
   <!-- RORB Tools — combined catchment prep + results viewer (3 toolbar icons) -->
-  <pyqgis_plugin name="RORB Tools" version="2.22">
+  <pyqgis_plugin name="RORB Tools" version="2.23">
     <description>RORB catchment preparation, control vector builder, and results viewer.</description>
     <about>A combined RORB toolbox with three toolbar icons: (1) Create RORB Layers — layer templates; (2) Build RORB .catg — auto-name, check links, build RORB/URBS control vectors; (3) RORB Results Viewer — browse .out files, plot hydrographs, export critical events. Bundles pyromb>=0.3 for build tools — no separate install needed.</about>
-    <version>2.22</version>
+    <version>2.23</version>
     <qgis_minimum_version>3.22</qgis_minimum_version>
     <qgis_maximum_version>4.99</qgis_maximum_version>
     <homepage>https://github.com/tszyilin/QGIS_RORB</homepage>

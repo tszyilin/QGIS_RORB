@@ -668,9 +668,10 @@ class _EnsembleWorker(QThread):
 
         # Discover node names from the first successful .out file
         node_legend = []  # [(num_str, name), ...]
+        first_node_peaks = next((r['node_peaks'] for r in results
+                                 if r['ok'] and r['node_peaks']), [])
         for r in results:
             if r['ok'] and r['node_peaks']:
-                # Try to get full legend from the copied .out file in out_dir
                 aep_s_ = _arr.aep_filename_label(r['aep'])
                 dur_s_ = _arr.dur_label(r['dur_min'])
                 fn = f'{catg_stem}_ aep{aep_s_}_du{dur_s_}tp{r["tp_num"]}.out'
@@ -678,23 +679,17 @@ class _EnsembleWorker(QThread):
                 node_legend = _arr.parse_node_legend(legend_path)
                 if node_legend:
                     break
-        # Fall back: number the nodes from the first result's node_peaks
-        if not node_legend:
-            for r in results:
-                if r['node_peaks']:
-                    node_legend = [(f'{i+1:02d}', name)
-                                   for i, (name, _) in enumerate(r['node_peaks'])]
-                    break
+        # Fall back (or supplement) when legend is missing or shorter than actual peaks —
+        # ungauged interstation nodes don't appear in the .out legend section.
+        if len(node_legend) < len(first_node_peaks):
+            node_legend = [(f'{i+1:02d}', name)
+                           for i, (name, _) in enumerate(first_node_peaks)]
         n_nodes = len(node_legend) if node_legend else 1
 
         # 1. Batch .out — fixed-width text matching RORBWin batch format
         batch_out_path = os.path.join(self.out_dir, f'{catg_stem}_batch.out')
         try:
-            kc0 = self.areas_params[0]['kc'] if self.areas_params else 0.0  # noqa: E501
-            m0  = self.areas_params[0]['m']  if self.areas_params else 0.0
-            il0 = self.areas_params[0]['il'] if self.areas_params else 0.0
-            cl0 = self.areas_params[0]['cl'] if self.areas_params else 0.0
-            # (areas_params is the worker's own attribute — set in __init__)
+            ap = self.areas_params or [{'kc': 0.0, 'm': 0.0, 'il': 0.0, 'cl': 0.0}]
 
             peak_hdr = ''.join(f'  Peak{num:>04s}' for num, _ in node_legend) if node_legend \
                        else '  Peak_max'
@@ -718,9 +713,16 @@ class _EnsembleWorker(QThread):
                 f.write(' Spatial pattern  : Uniform\n')
                 f.write(' Areal Red. Fact. : Based on ARR 2016 (Book 2 Chapter 4)\n')
                 f.write(' Loss factors     : Constant with ARI\n\n\n')
-                f.write(f' Parameters:  kc = {kc0:8.2f}    m = {m0:.2f}\n\n')
-                f.write(' Loss parameters     Initial loss (mm)   Cont. loss (mm/h)\n')
-                f.write(f'                          {il0:>8.2f}              {cl0:.2f}\n\n')
+                if self.lumped:
+                    f.write(f' Parameters:  kc = {ap[0]["kc"]:8.2f}    m = {ap[0]["m"]:.2f}\n\n')
+                    f.write(' Loss parameters     Initial loss (mm)   Cont. loss (mm/h)\n')
+                    f.write(f'                          {ap[0]["il"]:>8.2f}              {ap[0]["cl"]:.2f}\n\n')
+                else:
+                    f.write(f' Parameters:  Non-lumped ({len(ap)} ISAs)\n\n')
+                    f.write(f' {"ISA":<12} {"kc":>8} {"m":>6} {"IL (mm)":>10} {"CL (mm/h)":>12}\n')
+                    for i, p in enumerate(ap, 1):
+                        f.write(f' ISA {i:<8} {p["kc"]:>8.3f} {p["m"]:>6.3f} {p["il"]:>10.2f} {p["cl"]:>12.2f}\n')
+                    f.write('\n')
                 if self.preburst_enabled and self.preburst_data:
                     pb_display = _arr._PB_KEY_LABELS.get(self.preburst_pct_key, self.preburst_pct_key)
                     f.write(f' Pre-burst         : Applied ({pb_display} percentile)'
