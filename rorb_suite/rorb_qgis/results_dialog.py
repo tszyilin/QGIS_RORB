@@ -483,6 +483,40 @@ class RorbResultsDialog(QDockWidget):
         elif action == act_dir and out_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out_path)))
 
+    def _preview_table_context_menu(self, pos):
+        from qgis.PyQt.QtWidgets import QMenu
+        from qgis.PyQt.QtGui import QDesktopServices
+        from qgis.PyQt.QtCore import QUrl
+
+        row = self._exp_preview_table.indexAt(pos).row()
+        if row < 0:
+            return
+        src_it = self._exp_preview_table.item(row, 0)
+        entry  = src_it.data(UserRole) if src_it else None
+        if not entry:
+            return
+        out_path = entry.get('path', '')
+        stm_path = os.path.splitext(out_path)[0] + '.stm' if out_path else ''
+
+        menu = QMenu(self._exp_preview_table)
+        act_out = menu.addAction(
+            f"Open .out  ({os.path.basename(out_path)})" if out_path else "Open .out")
+        act_out.setEnabled(bool(out_path) and os.path.exists(out_path))
+        act_stm = menu.addAction(
+            f"Open .stm  ({os.path.basename(stm_path)})" if stm_path else "Open .stm")
+        act_stm.setEnabled(bool(stm_path) and os.path.exists(stm_path))
+        menu.addSeparator()
+        act_dir = menu.addAction("Open containing folder")
+        act_dir.setEnabled(bool(out_path))
+
+        action = menu.exec(self._exp_preview_table.viewport().mapToGlobal(pos))
+        if action == act_out and os.path.exists(out_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(out_path))
+        elif action == act_stm and os.path.exists(stm_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(stm_path))
+        elif action == act_dir and out_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out_path)))
+
     def _export_critical_csv(self):
         if not self._crit_rows:
             QMessageBox.warning(self, "Export", "No data."); return
@@ -867,6 +901,9 @@ class RorbResultsDialog(QDockWidget):
         self._exp_preview_table.horizontalHeader().setSectionResizeMode(HeaderStretch)
         self._exp_preview_table.setAlternatingRowColors(True)
         self._exp_preview_table.itemChanged.connect(self._on_preview_name_changed)
+        self._exp_preview_table.setContextMenuPolicy(CustomContextMenu)
+        self._exp_preview_table.customContextMenuRequested.connect(
+            self._preview_table_context_menu)
         prev_lay.addWidget(self._exp_preview_table)
         self._exp_version_warn = QLabel("")
         self._exp_version_warn.setWordWrap(True)
@@ -1044,6 +1081,7 @@ class RorbResultsDialog(QDockWidget):
             src_it.setFlags(ItemIsEnabled)
             src_it.setForeground(
                 QColor('#2563eb') if source.startswith("C") else QColor('#ea580c'))
+            src_it.setData(UserRole, entry)   # stored for context menu
             self._exp_preview_table.setItem(row, 0, src_it)
             for col, text in [(1, aep), (2, dur_label)]:
                 it = QTableWidgetItem(text)
