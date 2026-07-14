@@ -919,6 +919,9 @@ class RorbResultsDialog(QDockWidget):
         self._exp_extra_table.setEditTriggers(NoEditTriggers)
         self._exp_extra_table.setAlternatingRowColors(True)
         self._exp_extra_table.setSelectionBehavior(SelectRows)
+        self._exp_extra_table.setContextMenuPolicy(CustomContextMenu)
+        self._exp_extra_table.customContextMenuRequested.connect(
+            self._extra_table_context_menu)
         rem_btn = QPushButton("Remove selected"); rem_btn.setFixedWidth(130)
         rem_btn.clicked.connect(self._remove_extra_event)
         rem_row = QHBoxLayout(); rem_row.addWidget(rem_btn); rem_row.addStretch()
@@ -1068,7 +1071,9 @@ class RorbResultsDialog(QDockWidget):
         self._exp_extra_rows.append((aep, dur_lbl, dur_min, tp_num, entry))
         row = self._exp_extra_table.rowCount()
         self._exp_extra_table.insertRow(row)
-        self._exp_extra_table.setItem(row, 0, QTableWidgetItem(aep))
+        aep_it = QTableWidgetItem(aep)
+        aep_it.setData(UserRole, entry.get('path', ''))
+        self._exp_extra_table.setItem(row, 0, aep_it)
         self._exp_extra_table.setItem(row, 1, QTableWidgetItem(dur_lbl))
         tp_it = QTableWidgetItem(f"TP{tp_num}"); tp_it.setTextAlignment(AlignCenter)
         self._exp_extra_table.setItem(row, 2, tp_it)
@@ -1328,7 +1333,43 @@ class RorbResultsDialog(QDockWidget):
         QMessageBox.critical(self, "Scan error", msg)
 
     def _on_exp_scen_changed(self):
+        # Clear extra events — they belong to the previous scenario
+        self._exp_extra_rows.clear()
+        self._exp_extra_table.setRowCount(0)
         self._refresh_export_combos()
+
+    def _extra_table_context_menu(self, pos):
+        from qgis.PyQt.QtWidgets import QMenu
+        from qgis.PyQt.QtGui import QDesktopServices
+        from qgis.PyQt.QtCore import QUrl
+
+        row = self._exp_extra_table.indexAt(pos).row()
+        if row < 0:
+            return
+        aep_it   = self._exp_extra_table.item(row, 0)
+        out_path = aep_it.data(UserRole) if aep_it else ''
+        if not out_path:
+            return
+        stm_path = os.path.splitext(out_path)[0] + '.stm'
+
+        menu = QMenu(self._exp_extra_table)
+        act_out = menu.addAction(
+            f"Open .out  ({os.path.basename(out_path)})" if out_path else "Open .out")
+        act_out.setEnabled(bool(out_path) and os.path.exists(out_path))
+        act_stm = menu.addAction(
+            f"Open .stm  ({os.path.basename(stm_path)})" if stm_path else "Open .stm")
+        act_stm.setEnabled(bool(stm_path) and os.path.exists(stm_path))
+        menu.addSeparator()
+        act_dir = menu.addAction("Open containing folder")
+        act_dir.setEnabled(bool(out_path))
+
+        action = menu.exec(self._exp_extra_table.viewport().mapToGlobal(pos))
+        if action == act_out and os.path.exists(out_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(out_path))
+        elif action == act_stm and os.path.exists(stm_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(stm_path))
+        elif action == act_dir and out_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(out_path)))
 
     def _on_rep_method_changed(self):
         self._populate_critical_table()
@@ -1379,8 +1420,13 @@ class RorbResultsDialog(QDockWidget):
     def _refresh_export_combos(self):
         scen  = self._exp_scenario()
         nodes = self._all_nodes(scen)
+        prev  = self._exp_node_combo.currentText()
         self._exp_node_combo.blockSignals(True); self._exp_node_combo.clear()
         for n in nodes: self._exp_node_combo.addItem(n)
+        if prev and self._exp_node_combo.findText(prev) >= 0:
+            self._exp_node_combo.setCurrentText(prev)
+        elif nodes:
+            self._exp_node_combo.setCurrentIndex(len(nodes) - 1)  # default: last node (outlet)
         self._exp_node_combo.blockSignals(False)
         self._refresh_exp_crit_table()
         self._refresh_extra_aep()
