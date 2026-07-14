@@ -1053,7 +1053,7 @@ class _EnsembleWorker(QThread):
                         f'available classes at this duration: '
                         f'{sorted(v[1] for v in patterns if v[0] == dur_min)}')
                 for pos, (event_id, ts_min, fracs) in enumerate(pats, 1):
-                    tp_num = _arr.tp_number(aep, pos)
+                    tp_num = pos if is_areal else _arr.tp_number(aep, pos)
                     runs.append({
                         'aep': aep, 'cls': cls, 'dur_min': dur_min,
                         'tp_num': tp_num, 'event_id': event_id,
