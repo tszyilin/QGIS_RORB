@@ -5,7 +5,7 @@ name=QGIS RORB
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Prepare GIS layers and build RORB/URBS control vectors from a catchment.
-version=1.9
+version=2.0
 author=Tom Norman
 email=tom@ncos.com.au
 
@@ -33,6 +33,11 @@ repository=https://github.com/norman-tom/runoff-model
 hasProcessingProvider=yes
 
 changelog=
+v2.0: Run RORB: fix "No runs" with Areal_R_Increments.csv — detect the Areal
+    temporal pattern format (numeric Area column instead of AEP class) and
+    make all patterns available for any AEP. Generated .stm files now correctly
+    label the temporal pattern as "areal temporal patterns, standard area = N km²"
+    matching RORBwin output.
 v1.7: Run RORB: fix ISA group parsing — Parameters table now shows the correct
     7.2 print nodes and outlet from the .catg (was showing only "outlet").
     Add Refresh button in Parameter configuration to re-read ISA groups from

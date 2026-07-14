@@ -147,27 +147,50 @@ def load_depths(csv_path):
 
 def load_patterns(csv_path):
     """
-    Return {(dur_min, aep_class): [(ts_min, [frac,...]), ...]} from R_Increments.csv.
-    Columns: EventID, Duration, TimeStep, Region, AEP, Inc1, Inc2, ...
+    Return ({(dur_min, aep_class): [(event_id, ts_min, [frac,...]), ...]}, standard_area_km2).
+
+    Two formats from the ARR2016 Data Hub:
+      Standard  R_Increments.csv : EventID, Duration, TimeStep, Region, AEP,  Inc1, ...
+      Areal     R_Increments.csv : EventID, Duration, TimeStep, Region, Area, Inc1, ...
+
+    Areal format: col-4 is numeric (standard area in km², e.g. 100) — no AEP class.
+    Areal patterns apply to all AEP classes; stored under sentinel key '_areal_'.
+    Returns (patterns_dict, standard_area_km2) where standard_area_km2 is None for
+    the standard format.
     """
     patterns = defaultdict(list)
+    standard_area = None
+
     with open(csv_path, encoding='utf-8') as f:
         lines = f.readlines()
+
     for line in lines[1:]:
         parts = [p.strip() for p in line.split(',')]
         if len(parts) < 6:
             continue
         try:
             event_id = int(parts[0])
-            dur_min = int(parts[1])
-            ts_min = int(parts[2])
+            dur_min  = int(parts[1])
+            ts_min   = int(parts[2])
         except ValueError:
             continue
-        aep_cls = parts[4]
-        fracs = [float(p) for p in parts[5:] if p.strip()]
-        if fracs:
-            patterns[(dur_min, aep_cls)].append((event_id, ts_min, fracs))
-    return patterns
+
+        col4 = parts[4]
+        try:
+            area = float(col4)
+            # Numeric col-4 → Areal format (col4 = standard area, no AEP class column)
+            if standard_area is None:
+                standard_area = area
+            fracs = [float(p) for p in parts[5:] if p.strip()]
+            if fracs:
+                patterns[(dur_min, '_areal_')].append((event_id, ts_min, fracs))
+        except ValueError:
+            # String col-4 → Standard format (col4 = AEP class)
+            fracs = [float(p) for p in parts[5:] if p.strip()]
+            if fracs:
+                patterns[(dur_min, col4)].append((event_id, ts_min, fracs))
+
+    return patterns, standard_area
 
 
 def load_arf_params(hub_path):
@@ -289,7 +312,8 @@ def calc_arf(arf_params, dur_min, area_km2, aep_frac=0.10):
 
 def write_stm(out_path, fracs, ts_min, raw_depth_mm, arf,
               catg_path='', catg_name='', aep='', dur_display_str='', tp_num=1,
-              area_km2=0.0, n_subareas=1, calc_incs=200):
+              area_km2=0.0, n_subareas=1, calc_incs=200,
+              is_areal=False, standard_area_km2=None):
     """Write a RORB DESIGN storm file in RORBWin comment-header format.
 
     fracs: percentage increments (list summing to ~100).
@@ -310,7 +334,11 @@ def write_stm(out_path, fracs, ts_min, raw_depth_mm, arf,
         fh.write(f'C  Storm area (km²)   :      {area_km2:.2f}\n')
         fh.write(f'C  Storm ARI (yr)     : {aep}\n')
         fh.write(f'C  Storm duration     : {dur_display_str}\n')
-        fh.write(f'C  Temporal pattern   : ARR2016 pattern, {tp_num} (point temporal patterns)\n')
+        if is_areal and standard_area_km2 is not None:
+            tp_desc = f'ARR2016 pattern {tp_num} (areal temporal patterns, standard area = {standard_area_km2:.0f} km\xb2)'
+        else:
+            tp_desc = f'ARR2016 pattern {tp_num} (point temporal patterns)'
+        fh.write(f'C  Temporal pattern   : {tp_desc}\n')
         fh.write('C  Spatial pattern    : Uniform\n')
         fh.write(f'C  Burst depth (mm)   :   {raw_depth_mm:.2f}\n')
         fh.write(f'C  Areal Red. Fact.   :     {arf:.2f} (ARR2016 approach)\n')

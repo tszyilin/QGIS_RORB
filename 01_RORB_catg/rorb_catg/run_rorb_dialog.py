@@ -969,11 +969,14 @@ class _EnsembleWorker(QThread):
             self.done.emit(False, '', 0, 0)
             return
         try:
-            patterns = _arr.load_patterns(self.rinc_csv)
+            patterns, areal_area = _arr.load_patterns(self.rinc_csv)
         except Exception as e:
             self.progress.emit(f'[ERROR] Cannot load temporal patterns: {e}')
             self.done.emit(False, '', 0, 0)
             return
+        is_areal = areal_area is not None
+        if is_areal:
+            self.progress.emit(f'[INFO] Areal temporal patterns detected (standard area = {areal_area:.0f} km\xb2)')
 
         arf_params = None
         if self.hub_txt:
@@ -1028,6 +1031,9 @@ class _EnsembleWorker(QThread):
                 # Some regional CSVs omit 'very rare' — fall back to 'rare' patterns
                 if not pats and cls == 'very rare':
                     pats = sorted(patterns.get((dur_min, 'rare'), []), key=lambda x: x[0])
+                # Areal R_Increments.csv stores all patterns under '_areal_' (no AEP class)
+                if not pats:
+                    pats = sorted(patterns.get((dur_min, '_areal_'), []), key=lambda x: x[0])
                 if not pats:
                     self.progress.emit(
                         f'[WARN] No temporal patterns for class "{cls}" at {dur_min} min — '
@@ -1079,6 +1085,8 @@ class _EnsembleWorker(QThread):
                 tp_num=tp_num,
                 area_km2=arf_area,
                 n_subareas=n_subareas,
+                is_areal=is_areal,
+                standard_area_km2=areal_area,
             )
             write_par_file(par_path, catg_ws, stm_path,
                            self.lumped, self.verbosity, self.lossmodel,
@@ -2114,7 +2122,7 @@ class RorbRunDialog(QDialog):
         if not path or not os.path.isfile(path):
             return
         try:
-            patterns = _arr.load_patterns(path)
+            patterns, _ = _arr.load_patterns(path)
         except Exception:
             return
         self._tp_dur_mins = {k[0] for k in patterns.keys()}
