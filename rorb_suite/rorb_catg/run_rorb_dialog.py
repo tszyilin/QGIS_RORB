@@ -388,24 +388,26 @@ def parse_catg_areas(path):
 
 def parse_catg_isa_groups(path):
     """
-    Return a list of ISA group name strings for the lumped Parameters table.
+    Return an ordered list of ISA group name strings for the Parameters table.
 
-    Priority:
-    1. Explicit ISA group numbers on instruction-1 lines (positive group field).
-    2. Instruction 7.2 (dummy-print) node names — each marks a sub-catchment boundary.
-    3. Single group named after the outlet node (is_outlet=1 in #NODES).
-    4. Single default group ['ISA 1'].
+    Scans the #NODES block for print-code nodes:
+      - print code 72 (7.2) = dummy-print ISA boundary; name on next C line
+      - is_outlet flag = 1   = catchment outlet;        name on next C line
+
+    Returns [isa_1, isa_2, ..., outlet_name].
+    Falls back to ['ISA 1'] when no print nodes are found.
     """
     with open(path, encoding='utf-8', errors='replace') as fh:
         lines = fh.readlines()
 
-    # ── Pass 1: find outlet node name from #NODES ────────────────────────────
     outlet_name = None
+    dummy_names = []
+
     in_nodes = False
-    node_idx = 0
-    while node_idx < len(lines):
-        s = lines[node_idx].strip()
-        node_idx += 1
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        i += 1
         if '#NODES' in s:
             in_nodes = True
             continue
@@ -417,67 +419,34 @@ def parse_catg_isa_groups(path):
         if not body or not body[0].isdigit():
             continue
         nums = _numeric_tokens(body)
-        if len(nums) >= 6 and int(nums[5]) == 1:  # is_outlet flag
-            while node_idx < len(lines):
-                ns = lines[node_idx].strip()
-                node_idx += 1
-                if ns.startswith('C'):
-                    candidate = ns[1:].strip()
-                    if candidate:
-                        outlet_name = candidate
-                    break
-
-    # ── Pass 2: scan control vector ──────────────────────────────────────────
-    in_control = False
-    explicit_groups = set()
-    dummy_names = []
-
-    i = 0
-    while i < len(lines):
-        s = lines[i].strip()
-        i += 1
-        if s.startswith('C') or not s:
-            continue
-        if not in_control:
-            in_control = True
+        if len(nums) < 6:
             continue
 
-        parts = s.split(',')
-        instr_str = parts[0].strip()
+        is_outlet   = int(nums[5]) == 1
+        # Print code is the 10th numeric token; 72 = instruction 7.2 dummy-print
+        is_print_72 = len(nums) >= 10 and int(nums[9]) == 72
 
-        try:
-            instr = int(float(instr_str))
-        except (ValueError, IndexError):
+        if not (is_outlet or is_print_72):
             continue
 
-        if instr == 0:
-            break
+        # Name is on the immediately following C comment line
+        name = None
+        while i < len(lines):
+            ns = lines[i].strip()
+            i += 1
+            if ns.startswith('C'):
+                candidate = ns[1:].strip()
+                if candidate:
+                    name = candidate
+                break
 
-        if instr == 1 and len(parts) >= 3:
-            tok = parts[2].strip().split()[0] if parts[2].strip().split() else ''
-            try:
-                g = float(tok)
-                if g > 0:
-                    explicit_groups.add(int(g))
-            except (ValueError, TypeError):
-                pass
+        if is_print_72:
+            dummy_names.append(name or f'Node {len(dummy_names) + 1}')
+        if is_outlet:
+            outlet_name = name
 
-        # Instruction 7.2 = dummy-print node; next non-blank non-comment line
-        # holds the node name.
-        if instr_str == '7.2':
-            name = f'Node {len(dummy_names) + 1}'
-            while i < len(lines):
-                ns = lines[i].strip()
-                i += 1
-                if ns and not ns.startswith('C'):
-                    name = ns.split(',')[0].strip() or name
-                    break
-            dummy_names.append(name)
-
-    if explicit_groups:
-        return [f'ISA {g}' for g in sorted(explicit_groups)]
     if dummy_names:
-        return dummy_names
+        return dummy_names + [outlet_name or 'outlet']
     return [outlet_name or 'ISA 1']
 
 
@@ -1899,6 +1868,15 @@ class RorbRunDialog(QDialog):
         rgt.addStretch()
         param_h.addLayout(rgt)
 
+        btn_refresh_isa = QPushButton('Refresh')
+        btn_refresh_isa.setToolTip('Re-read ISA groups from the current .catg file')
+        btn_refresh_isa.setFixedWidth(70)
+        btn_refresh_isa.clicked.connect(self._refresh_isa)
+        far_rgt = QVBoxLayout()
+        far_rgt.addWidget(btn_refresh_isa)
+        far_rgt.addStretch()
+        param_h.addLayout(far_rgt)
+
         vlay.addWidget(grp_param)
 
         # Output Options
@@ -2179,6 +2157,14 @@ class RorbRunDialog(QDialog):
                 'browse to its location.</span>')
 
     # ── .catg loading ─────────────────────────────────────────────────────────
+
+    def _refresh_isa(self):
+        path = self.txt_catg.text().strip()
+        if path and os.path.isfile(path):
+            self._load_catg(path)
+        else:
+            QMessageBox.warning(self, 'No .catg file',
+                                'Browse to a .catg file in the Setup tab first.')
 
     def _load_catg(self, path):
         try:

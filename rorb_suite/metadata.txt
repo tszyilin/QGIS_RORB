@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.13
+version=2.14
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,10 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.14: Run RORB: fix ISA group parsing — Parameters table now shows the correct
+    7.2 print nodes and outlet from the .catg (was showing only "outlet").
+    Add Refresh button in Parameter configuration to re-read ISA groups from
+    the current .catg without re-browsing.
 v2.13: Run RORB: fix Parameters table in non-lumped (vary) mode — rows now show
     ISA groups (matching RORBwin's Parameter Specification dialog) instead of
     individual sub-areas.

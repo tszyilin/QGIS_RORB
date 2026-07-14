@@ -84,6 +84,14 @@ def main():
         assert vals == [30.0, 28.0, 25.0, 35.0, 40.0], f'unexpected areas: {vals}'
         isa_count = parse_catg_isa_count(SAMPLE_CATG)
         assert isa_count == 1, f'expected 1 ISA group (all -99), got {isa_count}'
+        # Real catg with 6 print-7.2 nodes + outlet → 7 ISA groups
+        real_catg = os.path.join(REPO_ROOT, '03_RORB_exe', '02_input', 'catchment_A.catg')
+        if os.path.isfile(real_catg):
+            from rorb_catg.run_rorb_dialog import parse_catg_isa_groups
+            groups = parse_catg_isa_groups(real_catg)
+            assert len(groups) == 7, f'expected 7 ISA groups for catchment_A.catg, got {len(groups)}: {groups}'
+            assert groups[0] == 'A-r', f'expected first group "A-r", got "{groups[0]}"'
+            assert groups[-1] == 'outlet', f'expected last group "outlet", got "{groups[-1]}"'
 
     @check('write_par_file() lumped + per-area round-trip')
     def _():
