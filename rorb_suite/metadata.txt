@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=2.16
+version=2.18
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,9 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v2.17: Run RORB: fix "No runs" error when using ARR Data Hub IFD depth CSVs
+    whose AEP headers are formatted as "1% AEP" instead of "1%" — the
+    normaliser now strips the trailing " AEP" suffix before matching.
 v2.16: Results Viewer: Export tab preview table now supports right-click to
     open the .out or .stm file for any listed event, or to open the
     containing folder — matching the Critical Events tab behaviour.

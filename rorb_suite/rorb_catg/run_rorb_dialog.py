@@ -998,23 +998,41 @@ class _EnsembleWorker(QThread):
             self.done.emit(False, '', 0, 0)
             return
 
+        # Emit diagnostics so mismatches are visible in the log
+        depths_aeps = sorted({a for d in depths.values() for a in d})
+        pat_classes  = sorted({k[1] for k in patterns})
+        self.progress.emit(f'[DEBUG] IFD AEPs in CSV   : {depths_aeps}')
+        self.progress.emit(f'[DEBUG] Pattern classes    : {pat_classes}')
+        self.progress.emit(f'[DEBUG] Selected AEPs      : {self.aep_list}')
+        self.progress.emit(f'[DEBUG] Common durations   : {common_durs} min')
+
         # Build run list
         runs = []
         for aep in self.aep_list:
             cls = _arr.aep_to_class(aep)
             if cls is None:
+                self.progress.emit(f'[WARN] AEP "{aep}" not recognised — skipped')
                 continue
             for dur_min in common_durs:
                 depth_mm = depths.get(dur_min, {}).get(aep)
                 if depth_mm is None:
+                    self.progress.emit(
+                        f'[WARN] No depth for AEP "{aep}" at {dur_min} min — '
+                        f'available AEPs at this duration: '
+                        f'{sorted(depths.get(dur_min, {}).keys())}')
                     continue
                 arf = _arr.calc_arf(arf_params, dur_min, arf_area,
                                     _arr.aep_label_to_fraction(aep))
                 key = (dur_min, cls)
-                pats = sorted(patterns.get(key, []), key=lambda x: x[0])  # sort by EventID
+                pats = sorted(patterns.get(key, []), key=lambda x: x[0])
                 # Some regional CSVs omit 'very rare' — fall back to 'rare' patterns
                 if not pats and cls == 'very rare':
                     pats = sorted(patterns.get((dur_min, 'rare'), []), key=lambda x: x[0])
+                if not pats:
+                    self.progress.emit(
+                        f'[WARN] No temporal patterns for class "{cls}" at {dur_min} min — '
+                        f'available classes at this duration: '
+                        f'{sorted(v[1] for v in patterns if v[0] == dur_min)}')
                 for pos, (event_id, ts_min, fracs) in enumerate(pats, 1):
                     tp_num = _arr.tp_number(aep, pos)
                     runs.append({
