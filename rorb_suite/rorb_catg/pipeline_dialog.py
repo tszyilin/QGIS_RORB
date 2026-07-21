@@ -61,7 +61,6 @@ class RorbPipelineDialog(QWidget):
         self._error_highlights = []   # QgsHighlight objects — kept alive here
         self._tmp_dir          = None
         self._tmp_dir_rewrite  = None
-        self._run_dialog       = None
         self._setup_ui()
 
     def closeEvent(self, event):
@@ -291,13 +290,6 @@ class RorbPipelineDialog(QWidget):
         self.btn_build_catg.setEnabled(False)
         self.btn_build_catg.clicked.connect(lambda: self._on_build('.catg'))
         build_row.addWidget(self.btn_build_catg)
-
-        self.btn_run_rorb = QPushButton('Run RORB →')
-        self.btn_run_rorb.setFixedHeight(36)
-        self.btn_run_rorb.setEnabled(False)
-        self.btn_run_rorb.setToolTip('Run RORB_CMD.exe against the built .catg file')
-        self.btn_run_rorb.clicked.connect(self._on_run_rorb)
-        build_row.addWidget(self.btn_run_rorb)
         vlay4.addLayout(build_row)
         root.addWidget(grp4)
 
@@ -896,13 +888,13 @@ class RorbPipelineDialog(QWidget):
             self._log('info',
                       f'Total catchment area (ellipsoidal): '
                       f'<b>{total_area:.4f} km²</b> ({n_subs} sub-catchments)')
-            if ext == '.catg':
-                self.btn_run_rorb.setEnabled(True)
             QMessageBox.information(self, 'Build complete',
                                     f'RORB control file written to:\n{output}\n\n'
                                     f'Total catchment area (ellipsoidal): '
                                     f'{total_area:.4f} km²\n'
                                     f'({n_subs} sub-catchments)')
+            if ext == '.catg' and self._on_catg_built:
+                self._on_catg_built(output)
         except Exception as e:
             QMessageBox.critical(self, 'Build failed',
                                  f'Error building {ext} file:\n\n{e}')
@@ -910,19 +902,3 @@ class RorbPipelineDialog(QWidget):
             btn.setEnabled(True)
             btn.setText(f'Build {ext}')
 
-    # ── Run RORB hand-off ───────────────────────────────────────────────────────
-
-    def _on_run_rorb(self):
-        catg = self.txt_output_catg.text().strip()
-        if not catg or not os.path.isfile(catg):
-            QMessageBox.warning(self, 'No .catg file',
-                                'Build a .catg file before running RORB.')
-            return
-        if self._on_catg_built:
-            self._on_catg_built(catg)
-            return
-        from .run_rorb_dialog import RorbRunDialog
-        self._run_dialog = RorbRunDialog(
-            self.iface, self, catg_path=catg,
-            on_open_results=self._on_open_results)
-        self._run_dialog.show()

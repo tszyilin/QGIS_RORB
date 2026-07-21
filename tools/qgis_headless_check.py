@@ -93,27 +93,12 @@ def main():
             assert groups[0] == 'A-r', f'expected first group "A-r", got "{groups[0]}"'
             assert groups[-1] == 'outlet', f'expected last group "outlet", got "{groups[-1]}"'
 
-    @check('write_par_file() lumped + per-area round-trip')
+    @check('parse_catg_calc_order(Fig6_7.catg)')
     def _():
-        import tempfile
-        from rorb_catg.run_rorb_dialog import write_par_file
-        areas_params = [dict(kc=1.5, m=0.8, il=20.0, cl=2.5) for _ in range(5)]
-        fd, path = tempfile.mkstemp(suffix='.par')
-        os.close(fd)
-        try:
-            write_par_file(path, 'C:/x.catg', 'C:/x.stm', True, 3, 1, areas_params)
-            text = open(path).read()
-            assert text.startswith('# BEGIN\n'), 'missing # BEGIN at column 1'
-            assert text.rstrip().endswith('# END'), 'missing # END at column 1'
-            assert 'Num ISA  :5' in text
-
-            write_par_file(path, 'C:/x.catg', 'C:/x.stm', False, 3, 1, areas_params)
-            text = open(path).read()
-            isa_lines = [l for l in text.splitlines() if l.startswith('ISA ')]
-            assert len(isa_lines) == 10, \
-                f'expected 5 kc/m + 5 IL/CL ISA lines when not lumped, got {len(isa_lines)}'
-        finally:
-            os.unlink(path)
+        from rorb_catg.run_rorb_dialog import parse_catg_calc_order
+        rows, missing = parse_catg_calc_order(SAMPLE_CATG)
+        assert rows, 'expected at least one row from Fig6_7.catg'
+        assert not any(missing[k] for k in missing), f'unexpected missing elements: {missing}'
 
     # ── Dialog construction (no .show(), no real GUI) ──────────────────────
     @check('construct CreateLayersDialog')
@@ -141,30 +126,18 @@ def main():
     def _():
         from rorb_catg.run_rorb_dialog import RorbRunDialog
         dlg = RorbRunDialog(iface, iface.mainWindow(), catg_path=SAMPLE_CATG)
-        assert dlg.table_areas.rowCount() == 1, \
-            f'expected 1 row in lumped mode (default), got {dlg.table_areas.rowCount()}'
-        dlg.rd_param_vary.setChecked(True)
-        dlg._on_param_mode_changed()
-        # non-lumped mode now shows ISA groups (same as lumped); Fig6_7.catg has
-        # no print nodes so parse_catg_isa_groups returns 1 outlet group
-        assert dlg.table_areas.rowCount() == 1, \
-            f'expected 1 row in per-area mode (ISA groups), got {dlg.table_areas.rowCount()}'
+        # Calc. Order tab should be populated after loading a .catg
+        assert dlg._calc_txt_catg.text() == SAMPLE_CATG, \
+            f'expected catg path in Calc. Order tab, got "{dlg._calc_txt_catg.text()}"'
+        # Fig6_7.catg has no print-7 nodes so table may be empty; just check no crash
+        assert dlg._calc_table is not None, '_calc_table widget missing'
 
     @check('construct RorbResultsDialog')
     def _():
         from rorb_qgis.results_dialog import RorbResultsDialog
         RorbResultsDialog(iface.mainWindow())
 
-    # ── Best-effort end-to-end run against real RORB_CMD.exe ────────────────
-    @check('RORB_CMD.exe end-to-end run (skipped if not installed)')
-    def _():
-        from rorb_catg.run_rorb_dialog import find_rorb_cmd, write_par_file, parse_catg_areas
-        exe = find_rorb_cmd()
-        if not exe:
-            raise SkipCheck('RORB_CMD.exe not found on this machine — skipped')
-        # (full run intentionally not wired up here; this check only confirms
-        #  discovery succeeds. Extend with a real subprocess run once an
-        #  exe path is confirmed present in this environment.)
+    # ── (RORB_CMD.exe end-to-end run removed — run functionality no longer in plugin) ──
 
     # ── Sync-drift check: catch "forgot to copy into rorb_suite" mistakes ──
     @check('rorb_catg source == rorb_suite/rorb_catg copy')
