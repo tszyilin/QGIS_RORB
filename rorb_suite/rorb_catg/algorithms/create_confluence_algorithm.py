@@ -144,9 +144,7 @@ class CreateConfluenceAlgorithm(QgsProcessingAlgorithm):
             "  print_code — print instruction: '7' (discharge), '7.1' (disc+actual), '7.2' (dummy gauge)\n"
             "  node_name  — optional location label written after the print instruction in the .catg\n\n"
             "Input layer (optional): if provided, geometry is copied and existing field "
-            "values are preserved. If left empty, an empty template layer is created.\n\n"
-            "Run Auto Name Confluences after digitising to assign letter IDs (a, b, c, …).\n"
-            "Use the Print Node Settings panel in Build RORB .catg to assign print codes interactively."
+            "values are preserved. If left empty, an empty template layer is created."
         )
 
     def tr(self, string):

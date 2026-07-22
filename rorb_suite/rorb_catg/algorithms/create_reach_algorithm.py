@@ -152,8 +152,7 @@ class CreateReachAlgorithm(QgsProcessingAlgorithm):
             f"{_REACH_TYPE_INFO}\n\n"
             "Input layer (optional): if provided, geometry is copied and existing "
             "t / s values are preserved. If left empty, a blank template is created "
-            "ready for manual digitising.\n\n"
-            "Run Auto Name Reaches after digitising to assign fromNode_toNode IDs."
+            "ready for manual digitising."
         )
 
     def tr(self, string):

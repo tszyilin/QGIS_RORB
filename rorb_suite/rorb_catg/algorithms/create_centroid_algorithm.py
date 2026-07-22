@@ -95,8 +95,7 @@ class CreateCentroidAlgorithm(QgsProcessingAlgorithm):
             "Compute the centroid point of each subcatchment polygon and create "
             "a point layer with the required RORB centroid fields:\n\n"
             "  id  — centroid identifier (string, blank — filled by Auto Name Centroids)\n"
-            "  fi  — fraction impervious (float, default 0.0)\n\n"
-            "Run Auto Name Centroids after this step to assign letter IDs (A, B, C, …)."
+            "  fi  — fraction impervious (float, default 0.0)"
         )
 
     def tr(self, string):
