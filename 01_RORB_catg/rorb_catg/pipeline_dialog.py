@@ -844,15 +844,18 @@ class RorbPipelineDialog(QWidget):
                             QgsProject.instance().transformContext())
             da.setEllipsoid(QgsProject.instance().ellipsoid())
 
-            # Build spatial index over subcatchment polygons.
-            poly_index = QgsSpatialIndex()
-            poly_geom = {}   # QgsFeatureId → QgsGeometry
+            # Build letter → polygon area lookup by matching centroid 'id' to
+            # the polygon's numeric 'id' field (via _id_to_uppercase), NOT by
+            # spatial containment. Spatial containment would give the wrong area
+            # for centroids that were auto-reassigned to a different polygon.
+            poly_geom = {}        # QgsFeatureId → QgsGeometry
+            letter_to_poly_fid = {}  # letter → QgsFeatureId of the matching polygon
             for poly_feat in self._named_basins.getFeatures():
-                poly_index.insertFeature(poly_feat)
                 poly_geom[poly_feat.id()] = poly_feat.geometry()
+                letter = _id_to_uppercase(poly_feat['id'])
+                if letter:
+                    letter_to_poly_fid[letter] = poly_feat.id()
 
-            # Map centroid letter → ellipsoidal area (km²) of the containing polygon.
-            # The first matching polygon wins; duplicates (same letter) are skipped.
             ellipsoidal_area_km2 = {}
             for cent_feat in self._named_cents.getFeatures():
                 try:
@@ -861,14 +864,12 @@ class RorbPipelineDialog(QWidget):
                     letter = ''
                 if not letter or letter in ellipsoidal_area_km2:
                     continue
-                pt = cent_feat.geometry()
-                for fid in poly_index.intersects(pt.boundingBox()):
-                    if poly_geom[fid].contains(pt):
-                        ellipsoidal_area_km2[letter] = da.convertAreaMeasurement(
-                            da.measureArea(poly_geom[fid]),
-                            QgsUnitTypes.AreaSquareKilometers
-                        )
-                        break
+                if letter in letter_to_poly_fid:
+                    fid = letter_to_poly_fid[letter]
+                    ellipsoidal_area_km2[letter] = da.convertAreaMeasurement(
+                        da.measureArea(poly_geom[fid]),
+                        QgsUnitTypes.AreaSquareKilometers
+                    )
 
             for b in tb:
                 if b.name in ellipsoidal_area_km2:
