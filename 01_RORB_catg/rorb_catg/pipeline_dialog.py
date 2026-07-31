@@ -570,10 +570,12 @@ class RorbPipelineDialog(QWidget):
 
         # ── 2. Name centroids ────────────────────────────────────────────────
         reader = _reader(cent)
-        named_cents = name_centroids(named_subs, reader, p('centroids', cent))
+        named_cents, cent_warnings = name_centroids(named_subs, reader, p('centroids', cent))
         reader = None
         gc.collect()
         named_cents = _finalise(named_cents, cent, 'centroids')
+        for w in cent_warnings:
+            self._log('warn', w)
         _apply_style(named_cents, 'centroid_check.qml')
         self._named_cents = named_cents
 

@@ -8,7 +8,8 @@ __revision__ = '$Format:%H$'
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
-                       QgsProcessingParameterFileDestination)
+                       QgsProcessingParameterFileDestination,
+                       QgsProcessingException)
 from ..compat import TYPE_LINE, TYPE_POLYGON, TYPE_POINT
 try:
     import pyromb
@@ -71,6 +72,18 @@ class BuildRorbAlgorithm(QgsProcessingAlgorithm):
         centroids = self.parameterAsSource(parameters, self.IN_CENTROID, context)
         confluences = self.parameterAsSource(parameters, self.IN_CONFLUENCE, context)
         sink = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
+
+        # Validate centroid IDs are unique before building
+        seen_ids = {}
+        for feat in centroids.getFeatures():
+            cid = feat['id']
+            if cid in seen_ids:
+                raise QgsProcessingException(
+                    f'Duplicate centroid id "{cid}" found (fid {seen_ids[cid]} and fid {feat.id()}). '
+                    f'Each subcatchment must have a unique name. '
+                    f'Run "Auto Name Centroids" and check that each polygon contains exactly one centroid point.'
+                )
+            seen_ids[cid] = feat.id()
 
         reach_vector = QVectorLayer(reaches)
         basin_vector = QVectorLayer(basins)

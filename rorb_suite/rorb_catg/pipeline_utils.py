@@ -219,7 +219,9 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
     """
     Assign letter IDs (A, B, …) to centroid points via a spatial join to the
     numbered subcatchment polygons. Adds/updates 'id' (str) and 'fi' (float).
-    Saves to output_path (.shp). Returns the loaded QgsVectorLayer.
+    If two centroids fall inside the same polygon, the second is auto-reassigned
+    to the nearest unclaimed polygon.
+    Saves to output_path (.shp). Returns (QgsVectorLayer, warnings: list[str]).
     """
     in_fields = cent_layer.fields()
     out_fields = _build_output_fields(
@@ -233,8 +235,10 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
                      if sub_crs != cent_crs else None)
 
     # Build spatial index over subcatchments (in centroid CRS)
+    # sub_dict: qgis fid → (geom, numeric_id, polygon_centroid_QgsPointXY)
     sub_index = QgsSpatialIndex()
     sub_dict  = {}
+    all_sub_numeric_ids = set()
     feats = named_subs_layer.getFeatures()
     for sub_feat in feats:
         geom = sub_feat.geometry()
@@ -243,25 +247,80 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
         f = QgsFeature(sub_feat.id())
         f.setGeometry(geom)
         sub_index.insertFeature(f)
-        sub_dict[sub_feat.id()] = (geom, sub_feat['id'])  # (geom, numeric_id)
+        poly_centroid = geom.centroid().asPoint()
+        sub_dict[sub_feat.id()] = (geom, sub_feat['id'], poly_centroid)
+        try:
+            all_sub_numeric_ids.add(int(sub_feat['id']))
+        except (ValueError, TypeError):
+            pass
     feats.close()
 
-    out_feats = []
-    feats = cent_layer.getFeatures()
-    for cent_feat in feats:
+    # Pass 1: match each centroid to a polygon
+    cent_features = list(cent_layer.getFeatures())
+    cent_to_num_id = {}   # cent internal id → matched numeric polygon id (or None)
+    poly_to_cents  = {}   # numeric polygon id → [cent internal ids]
+
+    for cent_feat in cent_features:
         pt = cent_feat.geometry()
         candidates = sub_index.intersects(pt.boundingBox())
-        matched_numeric_id = None
+        matched_num_id = None
         for fid in candidates:
-            sub_geom, sub_num_id = sub_dict[fid]
+            sub_geom, sub_num_id, _ = sub_dict[fid]
             if sub_geom.contains(pt):
-                matched_numeric_id = sub_num_id
+                matched_num_id = sub_num_id
                 break
+        cent_to_num_id[cent_feat.id()] = matched_num_id
+        if matched_num_id is not None:
+            poly_to_cents.setdefault(matched_num_id, []).append(cent_feat.id())
 
-        letter = _id_to_uppercase(matched_numeric_id) if matched_numeric_id is not None else ''
+    # Pass 2: resolve duplicates — reassign overflow centroids to nearest unclaimed polygon
+    warnings = []
+    claimed = set(poly_to_cents.keys())
+    overflow_cent_ids = []
+    for num_id, cent_ids in poly_to_cents.items():
+        if len(cent_ids) > 1:
+            overflow_cent_ids.extend(cent_ids[1:])
+
+    # Build lookup: numeric_id → polygon centroid point (for nearest search)
+    num_id_to_centroid = {}
+    for _, (_, num_id, poly_ctr) in sub_dict.items():
+        num_id_to_centroid[num_id] = poly_ctr
+
+    for cent_id in overflow_cent_ids:
+        cent_feat = next(f for f in cent_features if f.id() == cent_id)
+        pt = cent_feat.geometry().asPoint()
+        unclaimed = [sid for sid in all_sub_numeric_ids if sid not in {int(c) for c in claimed}]
+        if not unclaimed:
+            warnings.append(
+                f'Centroid fid {cent_id} is a duplicate and no unclaimed polygon '
+                f'was found — it will have no name.'
+            )
+            cent_to_num_id[cent_id] = None
+            continue
+        nearest = min(
+            unclaimed,
+            key=lambda sid: (pt.x() - num_id_to_centroid[sid].x()) ** 2
+                          + (pt.y() - num_id_to_centroid[sid].y()) ** 2
+        )
+        old_letter = _id_to_uppercase(cent_to_num_id[cent_id])
+        new_letter = _id_to_uppercase(nearest)
+        cent_to_num_id[cent_id] = nearest
+        claimed.add(nearest)
+        warnings.append(
+            f'Centroid fid {cent_id} was inside polygon "{old_letter}" (already taken) — '
+            f'auto-reassigned to nearest unclaimed polygon "{new_letter}". '
+            f'Check that this centroid is in the correct subcatchment.'
+        )
+
+    # Pass 3: build output features
+    fi_field_exists = 'fi' in [fld.name() for fld in in_fields]
+    out_feats = []
+    for cent_feat in cent_features:
+        matched_num_id = cent_to_num_id[cent_feat.id()]
+        letter = _id_to_uppercase(matched_num_id) if matched_num_id is not None else ''
 
         fi_val = 0.0
-        if 'fi' in [fld.name() for fld in in_fields]:
+        if fi_field_exists:
             try:
                 fi_val = float(cent_feat['fi']) if cent_feat['fi'] is not None else 0.0
             except (ValueError, TypeError):
@@ -274,9 +333,9 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
         attrs.append(fi_val)
         f.setAttributes(attrs)
         out_feats.append(f)
-    feats.close()
 
-    return _write_shapefile(out_feats, out_fields, cent_layer.wkbType(), cent_crs, output_path)
+    layer = _write_shapefile(out_feats, out_fields, cent_layer.wkbType(), cent_crs, output_path)
+    return layer, warnings
 
 
 # ─────────────────────────────────────────────────────────────────────────────
