@@ -273,18 +273,28 @@ def name_centroids(named_subs_layer, cent_layer, output_path):
         if matched_num_id is not None:
             poly_to_cents.setdefault(matched_num_id, []).append(cent_feat.id())
 
-    # Pass 2: resolve duplicates — reassign overflow centroids to nearest unclaimed polygon
+    # Build lookup: numeric_id → polygon centroid point (used in passes 2 and 3)
+    num_id_to_centroid = {}
+    for _, (_, num_id, poly_ctr) in sub_dict.items():
+        num_id_to_centroid[num_id] = poly_ctr
+
+    # Pass 2: resolve duplicates.
+    # When multiple centroids are inside the same polygon, keep the one closest
+    # to the polygon's centroid (most naturally "inside") and overflow the rest.
     warnings = []
     claimed = set(poly_to_cents.keys())
     overflow_cent_ids = []
     for num_id, cent_ids in poly_to_cents.items():
         if len(cent_ids) > 1:
-            overflow_cent_ids.extend(cent_ids[1:])
-
-    # Build lookup: numeric_id → polygon centroid point (for nearest search)
-    num_id_to_centroid = {}
-    for _, (_, num_id, poly_ctr) in sub_dict.items():
-        num_id_to_centroid[num_id] = poly_ctr
+            poly_ctr = num_id_to_centroid[num_id]
+            def _dist(cid):
+                f = next(f for f in cent_features if f.id() == cid)
+                p = f.geometry().asPoint()
+                return (p.x() - poly_ctr.x()) ** 2 + (p.y() - poly_ctr.y()) ** 2
+            cent_ids_sorted = sorted(cent_ids, key=_dist)
+            # keep the nearest; overflow the rest
+            poly_to_cents[num_id] = [cent_ids_sorted[0]]
+            overflow_cent_ids.extend(cent_ids_sorted[1:])
 
     for cent_id in overflow_cent_ids:
         cent_feat = next(f for f in cent_features if f.id() == cent_id)
