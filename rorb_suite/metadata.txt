@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.2
+version=3.3
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,11 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.3: Results Viewer: new "Duration Envelope" tab — peak flow vs storm duration
+    with a box-and-whisker for each duration showing the spread across all
+    temporal patterns (box = Q1–Q3, whiskers = min–max, dots = individual TPs),
+    a dashed mean-of-TPs line, the critical duration highlighted, a per-duration
+    stats table (min/Q1/median/mean/Q3/max, rep TP) and CSV export.
 v2.26: Run RORB: "Build .catg" is now a tab inside the Run RORB dialog itself
     (alongside "Calc. Order") instead of a separate button in the pipeline
     dialog that opened a second window — building a .catg now hands off to

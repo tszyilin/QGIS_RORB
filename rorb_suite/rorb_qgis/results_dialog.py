@@ -219,6 +219,7 @@ class RorbResultsDialog(QDockWidget):
         self._worker           = None
         self._tp_rows          = {}
         self._crit_rows        = []
+        self._env_rows         = []
         self._cmp_scenario_rows = []
         self._build_ui()
         self._restore_state()
@@ -270,6 +271,7 @@ class RorbResultsDialog(QDockWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._tab_files(),    "Files")
         self._tabs.addTab(self._tab_critical(), "Critical Events")
+        self._tabs.addTab(self._tab_envelope(), "Duration Envelope")
         self._tabs.addTab(self._tab_viewer(),   "Hydrograph Viewer")
         self._tabs.addTab(self._tab_export(),   "Export")
         root.addWidget(self._tabs)
@@ -570,7 +572,257 @@ class RorbResultsDialog(QDockWidget):
                             f"{r['ttp']:.3f}"])
         QMessageBox.information(self, "Export", f"Exported:\n{path}")
 
-    # ── Tab 3: Hydrograph Viewer ──────────────────────────────────────────────
+    # ── Tab 3: Duration Envelope  (Q vs duration, box-whisker over all TPs) ───
+
+    def _tab_envelope(self):
+        w = QWidget(); root = QVBoxLayout(w)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("AEP:"))
+        self._env_aep_combo = QComboBox(); self._env_aep_combo.setMinimumWidth(130)
+        self._env_aep_combo.currentIndexChanged.connect(self._replot_envelope)
+        ctrl.addWidget(self._env_aep_combo)
+        ctrl.addWidget(QLabel("Node:"))
+        self._env_node_combo = QComboBox(); self._env_node_combo.setMinimumWidth(160)
+        self._env_node_combo.currentIndexChanged.connect(self._replot_envelope)
+        ctrl.addWidget(self._env_node_combo)
+        self._env_pts_chk = QCheckBox("TP points"); self._env_pts_chk.setChecked(True)
+        self._env_pts_chk.stateChanged.connect(self._replot_envelope)
+        ctrl.addWidget(self._env_pts_chk)
+        self._env_mean_chk = QCheckBox("Mean line"); self._env_mean_chk.setChecked(True)
+        self._env_mean_chk.stateChanged.connect(self._replot_envelope)
+        ctrl.addWidget(self._env_mean_chk)
+        ctrl.addStretch()
+        exp_btn = QPushButton("Export Envelope CSV…")
+        exp_btn.clicked.connect(self._export_envelope_csv)
+        ctrl.addWidget(exp_btn)
+        root.addLayout(ctrl)
+
+        splitter = QSplitter(Vertical)
+
+        if HAS_MPL:
+            self._env_fig    = Figure(figsize=(8, 4.2), tight_layout=True)
+            self._env_ax     = self._env_fig.add_subplot(111)
+            self._env_canvas = FigureCanvas(self._env_fig)
+            splitter.addWidget(self._env_canvas)
+        else:
+            self._env_ax = self._env_canvas = None
+
+        self._env_table = QTableWidget(0, 10)
+        self._env_table.setHorizontalHeaderLabels([
+            "Duration", "# TPs", "Min", "Q1", "Median", "Mean", "Q3", "Max",
+            "Rep TP", "Rep Peak (m³/s)"])
+        self._env_table.horizontalHeader().setSectionResizeMode(HeaderStretch)
+        self._env_table.setEditTriggers(NoEditTriggers)
+        self._env_table.setAlternatingRowColors(True)
+        self._env_table.setSelectionBehavior(SelectRows)
+        splitter.addWidget(self._env_table)
+
+        splitter.setSizes([460, 220])
+        root.addWidget(splitter)
+        self._env_rows = []
+        return w
+
+    def _refresh_envelope_combos(self):
+        aeps  = self._all_aeps()
+        nodes = self._all_nodes()
+        prev_aep  = self._env_aep_combo.currentText()
+        prev_node = self._env_node_combo.currentText()
+
+        self._env_aep_combo.blockSignals(True); self._env_aep_combo.clear()
+        for a in aeps: self._env_aep_combo.addItem(a)
+        if prev_aep and self._env_aep_combo.findText(prev_aep) >= 0:
+            self._env_aep_combo.setCurrentText(prev_aep)
+        self._env_aep_combo.blockSignals(False)
+
+        self._env_node_combo.blockSignals(True); self._env_node_combo.clear()
+        for n in nodes: self._env_node_combo.addItem(n)
+        if prev_node and self._env_node_combo.findText(prev_node) >= 0:
+            self._env_node_combo.setCurrentText(prev_node)
+        elif nodes:
+            self._env_node_combo.setCurrentIndex(len(nodes) - 1)   # outlet
+        self._env_node_combo.blockSignals(False)
+
+        self._replot_envelope()
+
+    def _envelope_stats(self, aep, node, scenario=None):
+        """Per-duration peak-flow statistics across all temporal patterns."""
+        groups = defaultdict(list)
+        for e in self._entries_for_aep(aep, scenario):
+            _, dur_label, dur_min, tp = e['parsed']
+            q  = self._get_hydro(e, node)
+            pk = float(np.max(q)) if q is not None and len(q) else 0.0
+            groups[(dur_min, dur_label)].append((tp, pk, e))
+        rows = []
+        for dur_min, dur_label in sorted(groups):
+            tps   = sorted(groups[(dur_min, dur_label)], key=lambda x: x[0])
+            peaks = np.array([pk for _, pk, _ in tps], dtype=float)
+            q1, med, q3 = (float(v) for v in np.percentile(peaks, [25, 50, 75]))
+            rep_tp, rep_pk, _rep_e = self._pick_rep(tps)
+            rows.append({
+                'dur_min': dur_min, 'dur_label': dur_label,
+                'tps': tps, 'peaks': peaks,
+                'n': len(tps), 'min': float(peaks.min()), 'q1': q1,
+                'median': med, 'mean': float(peaks.mean()), 'q3': q3,
+                'max': float(peaks.max()),
+                'rep_tp': rep_tp, 'rep_peak': rep_pk,
+                'critical': False,
+            })
+        if rows:
+            max(rows, key=lambda r: r['mean'])['critical'] = True
+        return rows
+
+    def _pick_rep(self, tps):
+        """Pick the representative (tp, peak, entry) from [(tp, peak, entry), …]."""
+        mean = float(np.mean([pk for _, pk, _ in tps]))
+        method = (self._rep_method.currentData()
+                  if hasattr(self, '_rep_method') else 'closest')
+        if method == 'above':
+            above = [x for x in tps if x[1] >= mean]
+            if above:
+                return min(above, key=lambda x: x[1] - mean)
+        return min(tps, key=lambda x: abs(x[1] - mean))
+
+    def _replot_envelope(self):
+        if not hasattr(self, '_env_table'):
+            return
+        aep  = self._env_aep_combo.currentText()
+        node = self._env_node_combo.currentText() or None
+        rows = self._envelope_stats(aep, node) if aep else []
+        self._env_rows = rows
+
+        # ── table ──────────────────────────────────────────────────────────
+        self._env_table.setRowCount(0)
+        for r in rows:
+            row = self._env_table.rowCount()
+            self._env_table.insertRow(row)
+            dur_it = QTableWidgetItem(
+                r['dur_label'] + ("  ★" if r['critical'] else ""))
+            if r['critical']:
+                f = dur_it.font(); f.setBold(True); dur_it.setFont(f)
+                dur_it.setForeground(QColor('#dc2626'))
+            self._env_table.setItem(row, 0, dur_it)
+            n_it = QTableWidgetItem(str(r['n'])); n_it.setTextAlignment(AlignCenter)
+            self._env_table.setItem(row, 1, n_it)
+            for col, key in ((2, 'min'), (3, 'q1'), (4, 'median'),
+                             (5, 'mean'), (6, 'q3'), (7, 'max')):
+                it = QTableWidgetItem(f"{r[key]:.3f}")
+                it.setTextAlignment(AlignRightVCenter)
+                if key == 'mean' and r['critical']:
+                    it.setForeground(QColor('#dc2626'))
+                self._env_table.setItem(row, col, it)
+            tp_it = QTableWidgetItem(f"TP{r['rep_tp']}")
+            tp_it.setTextAlignment(AlignCenter)
+            self._env_table.setItem(row, 8, tp_it)
+            pk_it = QTableWidgetItem(f"{r['rep_peak']:.3f}")
+            pk_it.setTextAlignment(AlignRightVCenter)
+            self._env_table.setItem(row, 9, pk_it)
+
+        # ── plot ───────────────────────────────────────────────────────────
+        if not HAS_MPL or self._env_ax is None:
+            return
+        ax = self._env_ax
+        ax.clear()
+        if not rows:
+            ax.set_xlabel("Duration"); ax.set_ylabel("Peak flow (m³/s)")
+            self._env_canvas.draw()
+            return
+
+        pos  = list(range(1, len(rows) + 1))
+        data = [r['peaks'] for r in rows]
+        bp = ax.boxplot(data, positions=pos, widths=0.55, patch_artist=True,
+                        showmeans=False, whis=(0, 100), zorder=2)
+        for i, box in enumerate(bp['boxes']):
+            crit = rows[i]['critical']
+            box.set_facecolor('#fecaca' if crit else '#dbeafe')
+            box.set_edgecolor('#dc2626' if crit else '#2563eb')
+            box.set_linewidth(1.6 if crit else 1.0)
+        for key in ('whiskers', 'caps'):
+            for art in bp[key]:
+                art.set_color('#475569'); art.set_linewidth(1.0)
+        for med in bp['medians']:
+            med.set_color('#111827'); med.set_linewidth(1.6)
+
+        if self._env_pts_chk.isChecked():
+            for i, r in enumerate(rows):
+                n = r['n']
+                offs = (np.linspace(-0.18, 0.18, n) if n > 1 else np.array([0.0]))
+                for (tp, pk, _e), off in zip(r['tps'], offs):
+                    ax.plot(pos[i] + off, pk, marker='o', markersize=4,
+                            color=_TP_COLORS[(tp - 1) % len(_TP_COLORS)],
+                            markeredgecolor='#1f2937', markeredgewidth=0.4,
+                            linestyle='none', zorder=4)
+
+        if self._env_mean_chk.isChecked():
+            means = [r['mean'] for r in rows]
+            ax.plot(pos, means, color='#111827', linewidth=1.6, linestyle='--',
+                    marker='D', markersize=5, markerfacecolor='#facc15',
+                    zorder=5, label="Mean of TPs")
+
+        crit_row = next((i for i, r in enumerate(rows) if r['critical']), None)
+        if crit_row is not None:
+            r = rows[crit_row]
+            ax.axvline(pos[crit_row], color='#dc2626', linewidth=1.0,
+                       linestyle=':', alpha=0.6, zorder=1,
+                       label=f"Critical: {r['dur_label']}  "
+                             f"({r['mean']:.3f} m³/s, TP{r['rep_tp']})")
+
+        ax.set_xticks(pos)
+        ax.set_xticklabels([r['dur_label'] for r in rows], rotation=30,
+                           ha='right', fontsize=8)
+        ax.set_xlim(0.4, len(rows) + 0.6)
+        ax.set_xlabel("Storm duration")
+        ax.set_ylabel("Peak flow (m³/s)")
+        ax.set_title(f"{aep}  |  {node or 'outlet'}  |  "
+                     f"peak Q vs duration — spread over temporal patterns",
+                     fontsize=10)
+        ax.grid(True, axis='y', alpha=0.25)
+        handles, _lbls = ax.get_legend_handles_labels()
+        main_leg = ax.legend(fontsize=8, loc='upper right') if handles else None
+        # Separate key for the TP dot colours (same colours as the Hydrograph Viewer).
+        # A second ax.legend() call detaches the first, so re-add it afterwards.
+        if self._env_pts_chk.isChecked():
+            from matplotlib.lines import Line2D
+            tp_nums = sorted({tp for r in rows for tp, _pk, _e in r['tps']})
+            tp_handles = [
+                Line2D([], [], marker='o', linestyle='none', markersize=4,
+                       color=_TP_COLORS[(tp - 1) % len(_TP_COLORS)], label=f"TP{tp}")
+                for tp in tp_nums]
+            if tp_handles:
+                ax.legend(handles=tp_handles, fontsize=6.5, loc='lower right',
+                          ncol=min(5, len(tp_handles)), handletextpad=0.2,
+                          columnspacing=0.7, borderpad=0.4, framealpha=0.85)
+                if main_leg is not None:
+                    ax.add_artist(main_leg)
+        self._env_canvas.draw()
+
+    def _export_envelope_csv(self):
+        if not self._env_rows:
+            QMessageBox.warning(self, "Export", "No data."); return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Duration Envelope", "", "CSV (*.csv)")
+        if not path: return
+        aep  = self._env_aep_combo.currentText()
+        node = self._env_node_combo.currentText() or "outlet"
+        max_tps = max(r['n'] for r in self._env_rows)
+        with open(path, 'w', newline='') as f:
+            w = csv_mod.writer(f)
+            w.writerow([f"AEP: {aep}", f"Node: {node}"])
+            w.writerow([])
+            w.writerow(["Duration", "Num TPs", "Min", "Q1", "Median", "Mean",
+                        "Q3", "Max", "Rep TP", "Rep Peak (m3/s)", "Critical"]
+                       + ["TP peaks (TP#=m3/s)"] + [""] * (max_tps - 1))
+            for r in self._env_rows:
+                w.writerow([
+                    r['dur_label'], r['n'],
+                    f"{r['min']:.4f}", f"{r['q1']:.4f}", f"{r['median']:.4f}",
+                    f"{r['mean']:.4f}", f"{r['q3']:.4f}", f"{r['max']:.4f}",
+                    f"TP{r['rep_tp']}", f"{r['rep_peak']:.4f}",
+                    "Yes" if r['critical'] else "",
+                ] + [f"TP{_tp}={pk:.4f}" for _tp, pk, _e in r['tps']])
+        QMessageBox.information(self, "Export", f"Exported:\n{path}")
+
+    # ── Tab 4: Hydrograph Viewer ──────────────────────────────────────────────
 
     def _tab_viewer(self):
         w = QWidget(); root = QVBoxLayout(w)
@@ -1374,6 +1626,7 @@ class RorbResultsDialog(QDockWidget):
     def _on_rep_method_changed(self):
         self._populate_critical_table()
         self._replot()
+        self._replot_envelope()
         self._refresh_exp_crit_table()
         self._refresh_preview()
         self._save_state()
@@ -1412,6 +1665,7 @@ class RorbResultsDialog(QDockWidget):
         self._exp_scen_combo.blockSignals(False)
 
         self._refresh_export_combos()
+        self._refresh_envelope_combos()
 
         if aeps:
             self._populate_critical_table()
