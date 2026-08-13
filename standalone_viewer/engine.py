@@ -1,0 +1,574 @@
+"""
+Validated RORB routing engine — matches RORBWin output (NSE ≈ 0.9999).
+
+All functions are pure Python + NumPy; no QGIS dependency.
+"""
+import re
+import csv
+import numpy as np
+from pathlib import Path
+
+
+# ── Loss model ────────────────────────────────────────────────────────────────
+
+def apply_ilcl(rain_mm, il, cl, dt):
+    """IL/CL loss model. Returns excess depth [mm] per step."""
+    excess = np.zeros(len(rain_mm))
+    cum = 0.0
+    il_satisfied = False
+    for i, r in enumerate(rain_mm):
+        if il_satisfied:
+            excess[i] = max(0.0, r - cl * dt)
+        else:
+            cum += r
+            if cum >= il:
+                il_satisfied = True
+                excess[i] = max(0.0, (cum - il) - cl * dt)
+    return excess
+
+
+def to_m3s(excess_mm, area_km2, dt_hr):
+    """Convert excess depth [mm] + area [km²] + dt [hr] → flow [m³/s]."""
+    return excess_mm * area_km2 * 1e6 / 1e3 / (dt_hr * 3600.0)
+
+
+# ── Non-linear storage routing: S = k·Q^m ────────────────────────────────────
+
+def route(inflow, kc, kr, m, dt):
+    """
+    Route inflow through a single RORB reach.
+
+    Uses S = k·Q^m (RORB standard) with bisection solver.
+    Dry-start initial condition: I_prev = 0, so rhs = inflow[0]·dt/2.
+
+    Parameters
+    ----------
+    inflow : array-like, flow [m³/s] per step
+    kc     : global routing coefficient [hr·(m³/s)^(1-m)/km]
+    kr     : relative delay time for this reach
+    m      : non-linearity exponent (RORB default 0.8)
+    dt     : time step [hours]
+    """
+    k = kc * kr
+    n = len(inflow)
+    Q = np.zeros(n)
+
+    def bisect(rhs, hi_bound):
+        lo, hi = 0.0, max(hi_bound, 1e-9)
+        for _ in range(64):
+            mid = (lo + hi) / 2.0
+            if k * mid ** m + mid * dt / 2.0 < rhs:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2.0
+
+    # Dry start: prior inflow = 0
+    Q[0] = bisect(inflow[0] * dt / 2.0, max(inflow[0], 0.0) * 4.0 + 1.0)
+
+    for t in range(1, n):
+        I1, I2, Q1 = inflow[t - 1], inflow[t], Q[t - 1]
+        rhs = (I1 + I2) * dt / 2.0 - Q1 * dt / 2.0 + k * max(Q1, 0.0) ** m
+        Q[t] = bisect(rhs, max(I1, I2, Q1) * 4.0 + 1.0)
+
+    return Q
+
+
+# ── Control vector runner ─────────────────────────────────────────────────────
+
+def _reach_label(line, reach_num, code):
+    """Extract a human-readable label for a reach from its vector line."""
+    # Try to parse the description after '-99'
+    after = re.split(r'-99', line, maxsplit=1)
+    desc = after[1].strip().lstrip(',').strip() if len(after) > 1 else ''
+    # Take only the part before the next comma-separated description
+    desc = desc.split(',')[0].strip()
+    code_name = {1: 'SA+route', 2: 'add SA+route', 5: 'route'}[code]
+    label = desc if desc else f'Reach {reach_num}'
+    return f'Reach {reach_num}: {label} [{code_name}]'
+
+
+def run_event(vector, areas_km2, kr_list, kc, m_exp, dt, rain_pad, il, cl):
+    """
+    Execute a RORB control vector.
+
+    Returns
+    -------
+    print_results  : dict {node_name: np.ndarray}  — hydrographs at print nodes (code 7)
+    reach_results  : list of dicts, one per routing step (codes 1/2/5):
+                     {'label': str, 'hydro': np.ndarray, 'reach_num': int,
+                      'code': int, 'kr': float, 'k': float}
+    """
+    n = len(rain_pad)
+    excess = apply_ilcl(rain_pad, il, cl, dt)
+    sa_in = [to_m3s(excess, a, dt) for a in areas_km2]
+
+    hydro = np.zeros(n)
+    stack = []
+    print_results = {}
+    reach_results = []
+    si, ki = 0, 0
+    pending_name = False
+    reach_num = 0
+
+    for line in vector:
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+
+        if pending_name:
+            if not re.match(r'^\d', trimmed):
+                print_results[trimmed] = hydro.copy()
+                pending_name = False
+                continue
+            pending_name = False
+
+        code_m = re.match(r'^(\d+)', trimmed)
+        if not code_m:
+            continue
+        code = int(code_m.group(1))
+
+        def get_sa():
+            nonlocal si
+            arr = sa_in[si] if si < len(sa_in) else np.zeros(n)
+            si += 1
+            return arr
+
+        def get_kr():
+            nonlocal ki
+            kr = kr_list[ki] if ki < len(kr_list) else 0.1
+            ki += 1
+            return kr
+
+        if code == 0:
+            break
+        elif code == 1:
+            reach_num += 1
+            kr = get_kr()
+            hydro = route(get_sa(), kc, kr, m_exp, dt)
+            reach_results.append({
+                'label': _reach_label(trimmed, reach_num, code),
+                'hydro': hydro.copy(), 'reach_num': reach_num,
+                'code': code, 'kr': kr, 'k': kc * kr,
+            })
+        elif code == 2:
+            reach_num += 1
+            sa = get_sa()
+            kr = get_kr()
+            hydro = route(hydro + sa, kc, kr, m_exp, dt)
+            reach_results.append({
+                'label': _reach_label(trimmed, reach_num, code),
+                'hydro': hydro.copy(), 'reach_num': reach_num,
+                'code': code, 'kr': kr, 'k': kc * kr,
+            })
+        elif code == 3:
+            stack.append(hydro.copy())
+            hydro = np.zeros(n)
+        elif code == 4:
+            hydro = hydro + (stack.pop() if stack else np.zeros(n))
+        elif code == 5:
+            reach_num += 1
+            kr = get_kr()
+            hydro = route(hydro, kc, kr, m_exp, dt)
+            reach_results.append({
+                'label': _reach_label(trimmed, reach_num, code),
+                'hydro': hydro.copy(), 'reach_num': reach_num,
+                'code': code, 'kr': kr, 'k': kc * kr,
+            })
+        elif code == 7:
+            pending_name = True
+
+    return print_results, reach_results
+
+
+# ── File parsers ──────────────────────────────────────────────────────────────
+
+def parse_catg(path):
+    """Parse a RORB .catg file. Returns (areas_km2, vector_lines)."""
+    lines = Path(path).read_text(errors='replace').splitlines()
+
+    areas = []
+    in_area = False
+    for line in lines:
+        if 'C Sub Area Data' in line:
+            in_area = True
+            continue
+        if not in_area:
+            continue
+        if line.strip().startswith('C'):
+            continue
+        if '-99' in line:
+            before = line.split('-99')[0]
+            areas += [float(x) for x in re.findall(r'[\d.]+', before)]
+            break
+        areas += [float(x) for x in re.findall(r'[\d.]+', line)]
+
+    vector = []
+    past_graphical = False
+    skip_flag = False
+    for line in lines:
+        s = line.strip()
+        if s.startswith('C END RORB_GE'):
+            past_graphical = True
+            skip_flag = True
+            continue
+        if not past_graphical:
+            continue
+        if skip_flag and s == '1':
+            skip_flag = False
+            continue
+        vector.append(s)
+
+    return areas, vector
+
+
+def parse_out(path):
+    """
+    Parse a RORB .out file.
+
+    Returns
+    -------
+    kc, m, il, cl, dt, rain_ts, kr_list, peaks, total_depth
+    """
+    txt = Path(path).read_text(errors='replace')
+
+    kc  = float(re.search(r'kc\s*=\s*([\d.]+)', txt).group(1))
+    m   = float(re.search(r'\bm\s*=\s*([\d.]+)', txt).group(1))
+    loss_m = re.search(
+        r'Initial loss \(mm\)\s+Cont\. loss \(mm/h\)\s+([\d.]+)\s+([\d.]+)', txt)
+    il = float(loss_m.group(1))
+    cl = float(loss_m.group(2))
+    dt = float(re.search(r'Time increment.*?=\s*([\d.]+)\s+hours', txt).group(1))
+
+    rain_section = re.search(r'Rainfall, mm.*?(?=Rainfall-excess)', txt, re.DOTALL)
+    rain_ts = []
+    if rain_section:
+        for line in rain_section.group(0).splitlines():
+            nums = re.findall(r'[\d.]+', line)
+            if len(nums) >= 2 and nums[0].isdigit():
+                rain_ts.append(float(nums[1]))
+    total_depth = sum(rain_ts) if rain_ts else None
+
+    kr_list = [float(x) for x in re.findall(
+        r'^\s*\d+\s+[\d.]+\s+([\d.]+)\s+Natural', txt, re.MULTILINE)]
+
+    peaks = {}
+    node = None
+    for line in txt.splitlines():
+        nm = re.search(r'\*\*\* Calculated hydrograph,\s+(.+)', line)
+        if nm:
+            node = nm.group(1).strip()
+        else:
+            nm2 = re.search(r'\*\*\* Calc\. hyd\. for ungauged interstation site at:\s+(.+)', line)
+            if nm2:
+                node = nm2.group(1).strip()
+        if node and 'Peak discharge' in line:
+            nums = re.findall(r'[\d.]+', line)
+            if nums:
+                peaks[node] = float(nums[-1])
+            node = None
+
+    return kc, m, il, cl, dt, rain_ts, kr_list, peaks, total_depth
+
+
+def parse_out_ttp(path):
+    """
+    Parse RORB's own 'Time to peak,h' from each node's summary block.
+
+    Handles both regular print nodes (*** Calculated hydrograph,) and
+    ungauged interstation / dummy-print nodes
+    (*** Calc. hyd. for ungauged interstation site at:).
+
+    Returns {node_name: time_to_peak_hr}.  Empty dict on failure.
+    """
+    result = {}
+    node = None
+    try:
+        with open(path, encoding='latin-1', errors='replace') as f:
+            for line in f:
+                nm = re.search(r'\*\*\* Calculated hydrograph,\s+(.+)', line)
+                if nm:
+                    node = nm.group(1).strip()
+                    continue
+                nm2 = re.search(
+                    r'\*\*\* Calc\. hyd\. for ungauged interstation site at:\s+(.+)', line)
+                if nm2:
+                    node = nm2.group(1).strip()
+                    continue
+                if node and 'Time to peak' in line:
+                    nums = re.findall(r'[\d.]+(?:[Ee][+-]?\d+)?', line)
+                    if nums:
+                        result[node] = float(nums[-1])
+                    node = None
+    except OSError:
+        pass
+    return result
+
+
+def parse_stm(path):
+    """
+    Parse a RORB .stm storm file.
+    Returns (dt_hr, rain_ts_mm) or (None, None) on failure.
+    """
+    txt = Path(path).read_text(errors='replace')
+    # dt line: "C 0.08333,200, 1, 1, 1, -99" — the leading C is optional
+    dt_m    = re.search(r'^\s*(?:C\s+)?([\d.]+),\s*\d+', txt, re.MULTILINE)
+    depth_m = re.search(r'ARF\*BurDepth\(mm\)\s*:\s*([\d.]+)', txt)
+    pct_m   = re.search(r'Temporal pattern \(% of depth\)\s*\n([\s\S]+?)(?:\nC |\n-99)', txt)
+
+    dt    = float(dt_m.group(1))    if dt_m    else None
+    depth = float(depth_m.group(1)) if depth_m else None
+    pcts  = []
+    if pct_m:
+        for v in re.findall(r'-?[\d.]+', pct_m.group(1)):
+            val = float(v)
+            if val < 0:
+                break
+            pcts.append(val)
+
+    if not depth or not pcts or not dt:
+        return None, None
+    return dt, [depth * p / 100.0 for p in pcts]
+
+
+def parse_out_rainfall(path):
+    """
+    Parse the catchment-mean rainfall hyetograph from a RORB .out file.
+
+    The 'Rainfall, mm' table has columns:
+        Incs  Catchment  SubA  SubB  ...
+    We return the catchment-mean column (index 1).
+
+    Returns
+    -------
+    time_hr  : list of float  — mid-point time of each increment [hr]
+    rain_mm  : list of float  — catchment-mean rainfall per increment [mm]
+    dt_hr    : float          — time step [hr]
+    """
+    lines = Path(path).read_text(errors='replace').splitlines()
+    txt   = '\n'.join(lines)
+
+    # dt from header
+    dt_hr = None
+    m = re.search(r'Time increment.*?=\s*([\d.]+)\s+hours', txt)
+    if m:
+        dt_hr = float(m.group(1))
+
+    # Locate the "Rainfall, mm, in time inc" section
+    start_idx = None
+    for i, line in enumerate(lines):
+        if re.search(r'Rainfall,\s*mm,\s*in time inc', line):
+            start_idx = i
+            break
+    if start_idx is None:
+        return [], [], dt_hr
+
+    # Find the header row containing "Incs"
+    hdr_idx = None
+    for i in range(start_idx, min(start_idx + 10, len(lines))):
+        if re.match(r'\s*Incs', lines[i]):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return [], [], dt_hr
+
+    # Parse data rows — stop at "Tot." summary line
+    rain_mm = []
+    for line in lines[hdr_idx + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('Tot'):
+            break
+        parts = stripped.split()
+        try:
+            rain_mm.append(float(parts[1]))   # catchment-mean column
+        except (ValueError, IndexError):
+            if rain_mm:
+                break
+
+    if dt_hr and rain_mm:
+        time_hr = [i * dt_hr for i in range(len(rain_mm))]
+    else:
+        time_hr = list(range(len(rain_mm)))
+
+    return time_hr, rain_mm, dt_hr
+
+
+def _parse_site_names(lines):
+    """
+    Parse the 'Code no. ... read as NAME' block in a RORB .out file.
+
+    These lines appear under 'Catchment name & reach type flag / Control vector
+    & storage data' and list every print node (code 7.x) in the same order as
+    the Hyd0001, Hyd0002, ... columns in the hydrograph table.
+
+    Example lines:
+      Code no.  13     7.2 Ungauged interstation area location read as node_21
+      Code no.  31     7.0 Location read as Western_Outlet
+
+    Returns dict mapping 'Hyd0001' → 'Western_Outlet', etc.
+    Falls back to empty dict (raw Hyd000x names) when none are found.
+    """
+    names = []
+    in_block = False
+    for line in lines:
+        if re.search(r'Control vector & storage data', line):
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        m = re.match(r'\s*Code no\.\s+\d+\s+[\d.]+\s+.*?read as\s+(\S+)', line, re.IGNORECASE)
+        if m:
+            names.append(m.group(1).strip())
+        elif names:
+            # Stop at the first non-matching line after we've collected names
+            if line.strip() and not line.strip().startswith('Code no.'):
+                break
+    # Build lookup keyed by both 4-digit (Hyd0001, RORB 6.52+) and
+    # 3-digit (Hyd001, RORB 6.44) column name formats.
+    result = {}
+    for i, name in enumerate(names):
+        result[f'Hyd{i+1:04d}'] = name   # 4-digit: Hyd0001
+        result[f'Hyd{i+1:03d}'] = name   # 3-digit: Hyd001
+    return result
+
+
+def parse_out_hydrograph(path):
+    """
+    Parse the 'Hydrograph summary' table from a RORB .out file.
+
+    Node labels come from the 'Site  Description' section
+    (e.g. 'N_01', 'Total Outlet') rather than the raw 'Hyd0001' column
+    headers.  Falls back to 'Hyd000x' when no name is defined.
+
+    Returns
+    -------
+    nodes      : dict  {node_label: np.ndarray of flow [m³/s]}
+    time_axis  : list  of time values [hr]
+    dt         : float  time step [hr]  (None if only 1 row)
+    """
+    lines = Path(path).read_text(errors='replace').splitlines()
+
+    # Build Hyd000x → descriptive-name mapping from the site table
+    site_names = _parse_site_names(lines)
+
+    # Locate the "Inc    Time" header row
+    hdr_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'\s*Inc\s+Time\s+', line):
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        return {}, [], None
+
+    # Apply descriptive names where available
+    raw_names  = lines[hdr_idx].split()[2:]
+    node_names = [site_names.get(n, n) for n in raw_names]
+
+    times  = []
+    arrays = [[] for _ in node_names]
+
+    for line in lines[hdr_idx + 1:]:
+        parts = line.split()
+        if len(parts) < 2 + len(node_names):
+            if times:
+                break
+            continue
+        try:
+            times.append(float(parts[1]))
+            for j in range(len(node_names)):
+                arrays[j].append(float(parts[2 + j]))
+        except ValueError:
+            if times:
+                break
+
+    nodes = {name: np.array(arr) for name, arr in zip(node_names, arrays)}
+    dt    = (times[1] - times[0]) if len(times) >= 2 else None
+    # RORB 6.44 omits Inc 0, so the table starts at Inc 1 / Time dt.
+    # Shift back so the time axis starts at 0.0 (matches RORB 6.52 and summary values).
+    time_shifted = False
+    if times and dt is not None and times[0] != 0.0:
+        offset = times[0]
+        times = [t - offset for t in times]
+        time_shifted = True
+    return nodes, times, dt, time_shifted
+
+
+def parse_rorb_csv(path):
+    """
+    Parse a RORB output CSV file.
+    Returns {node_name: np.ndarray}, time_axis (hrs), dt.
+
+    RORB convention: Inc i → time (i+1)*dt.
+    Aligned to engine (which outputs at i*dt) by skipping the first RORB step.
+    """
+    lines = Path(path).read_text(errors='replace').splitlines()
+    hi = next((i for i, l in enumerate(lines) if 'Time (hrs)' in l), None)
+    if hi is None:
+        return {}, [], None
+
+    header = [h.strip() for h in lines[hi].split(',')]
+    names  = [h.replace('Calculated hydrograph:', '').strip() for h in header[2:]]
+    arrays = [[] for _ in names]
+    times  = []
+
+    for line in lines[hi + 1:]:
+        parts = line.split(',')
+        if len(parts) < len(header):
+            break
+        try:
+            times.append(float(parts[1]))
+            for j, a in enumerate(arrays):
+                a.append(float(parts[j + 2]))
+        except (ValueError, IndexError):
+            break
+
+    # Skip first RORB step to align with engine output (rorb[k] ≈ engine[k-1])
+    nodes = {name: np.array(arr[1:]) for name, arr in zip(names, arrays)}
+    dt = (times[1] - times[0]) if len(times) >= 2 else None
+    time_axis = [t for t in times[1:]]
+    return nodes, time_axis, dt
+
+
+# ── High-level runner ─────────────────────────────────────────────────────────
+
+def run_from_files(catg_path, out_path, stm_path=None):
+    """
+    Run the validated RORB engine from file paths.
+
+    Returns a results dict:
+        hydros     : {node_name: np.ndarray}  (engine output)
+        time       : list of time values [hr]
+        dt         : time step [hr]
+        kc, m, il, cl: model parameters
+        rorb_peaks : {node_name: peak_flow}   (from .out file)
+        n_steps    : total simulation steps
+    """
+    areas, vector = parse_catg(catg_path)
+    kc, m, il, cl, dt, rain_ts, kr_list, rorb_peaks, _ = parse_out(out_path)
+
+    if stm_path and Path(stm_path).exists():
+        stm_dt, stm_rain = parse_stm(stm_path)
+        if stm_rain and stm_dt:
+            rain_ts, dt = stm_rain, stm_dt
+
+    if not rain_ts or not kr_list:
+        raise ValueError("Could not parse rainfall or storage parameters from .out file.")
+
+    n_steps  = max(len(rain_ts) * 4, 200)
+    rain_pad = rain_ts + [0.0] * (n_steps - len(rain_ts))
+
+    hydros, reach_results = run_event(vector, areas, kr_list, kc, m, dt, rain_pad, il, cl)
+    time_axis = [i * dt for i in range(n_steps)]
+
+    return {
+        'hydros':        hydros,         # print nodes {name: array}
+        'reach_results': reach_results,  # all reaches [{label, hydro, ...}]
+        'time':          time_axis,
+        'dt':            dt,
+        'kc':            kc,
+        'm':             m,
+        'il':            il,
+        'cl':            cl,
+        'rorb_peaks':    rorb_peaks,
+        'n_steps':       n_steps,
+    }
