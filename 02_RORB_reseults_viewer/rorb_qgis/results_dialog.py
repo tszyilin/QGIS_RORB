@@ -24,7 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QHeaderView, QFileDialog, QMessageBox,
     QLineEdit, QCheckBox, QScrollArea,
     QProgressBar, QSplitter, QInputDialog,
-    QRadioButton, QButtonGroup,
+    QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
 )
 from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
 from qgis.PyQt.QtGui import QFont, QColor
@@ -35,6 +35,7 @@ from .compat import (
     Horizontal, Vertical,
     CustomContextMenu,
     NoEditTriggers, SelectRows, HeaderStretch,
+    InternalMove, MoveAction,
     UserRole, ItemIsEnabled, ItemIsUserCheckable,
     Checked, Unchecked,
     DialogAccepted,
@@ -207,6 +208,150 @@ class _AddScenarioDialog(QDialog):
         return self._name.text().strip(), self._folder.text().strip()
 
 
+# ── Add-multiple-scenarios dialog ─────────────────────────────────────────────
+
+class _AddMultipleScenariosDialog(QDialog):
+    """Bulk-add scenarios: one row per (name, folder) pair."""
+
+    def __init__(self, parent=None, existing_names=None,
+                 initial_rows=None, title=None, intro=None):
+        super().__init__(parent)
+        self.setWindowTitle(title or "Add Multiple Scenarios")
+        self.setMinimumSize(760, 380)
+        self._existing = set(existing_names or [])
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(intro or (
+            "Enter one scenario per row. Use 'Add subfolders of…' to bulk-fill "
+            "from a parent folder (each subfolder becomes one scenario).")))
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["Scenario name", "Folder", ""])
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(0, hdr.ResizeMode.Interactive
+                                 if hasattr(hdr, 'ResizeMode') else 0)
+        hdr.setStretchLastSection(False)
+        try:
+            from qgis.PyQt.QtWidgets import QHeaderView as _QH
+            hdr.setSectionResizeMode(0, _QH.Interactive)
+            hdr.setSectionResizeMode(1, _QH.Stretch)
+            hdr.setSectionResizeMode(2, _QH.ResizeToContents)
+        except Exception:
+            pass
+        self._table.setColumnWidth(0, 200)
+        lay.addWidget(self._table)
+
+        row_btns = QHBoxLayout()
+        add_row  = QPushButton("+ Add row")
+        sub_btn  = QPushButton("Add subfolders of…")
+        clr_btn  = QPushButton("Clear all")
+        add_row.clicked.connect(lambda: self._add_row("", ""))
+        sub_btn.clicked.connect(self._add_from_subfolders)
+        clr_btn.clicked.connect(lambda: self._table.setRowCount(0))
+        row_btns.addWidget(add_row); row_btns.addWidget(sub_btn)
+        row_btns.addWidget(clr_btn); row_btns.addStretch()
+        lay.addLayout(row_btns)
+
+        btn = QHBoxLayout()
+        ok  = QPushButton("Add All"); ok.setDefault(True)
+        can = QPushButton("Cancel")
+        ok.clicked.connect(self._on_ok); can.clicked.connect(self.reject)
+        btn.addStretch(); btn.addWidget(ok); btn.addWidget(can)
+        lay.addLayout(btn)
+
+        if initial_rows:
+            for name, folder in initial_rows:
+                self._add_row(name, folder)
+        else:
+            for _ in range(3):
+                self._add_row("", "")
+
+    def _add_row(self, name, folder):
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._table.setItem(row, 0, QTableWidgetItem(name))
+        self._table.setItem(row, 1, QTableWidgetItem(folder))
+        cell = QWidget(); cl = QHBoxLayout(cell)
+        cl.setContentsMargins(2, 0, 2, 0); cl.setSpacing(2)
+        b = QPushButton("Browse…"); b.setFixedWidth(70)
+        r = QPushButton("✕");       r.setFixedWidth(24)
+        b.clicked.connect(lambda _=False, rr=row: self._browse_row(rr))
+        r.clicked.connect(lambda _=False, rr=row: self._remove_row(rr))
+        cl.addWidget(b); cl.addWidget(r)
+        self._table.setCellWidget(row, 2, cell)
+
+    def _browse_row(self, row):
+        # Row index passed at connect time can go stale after removals; look up
+        # the widget's current row instead.
+        w = self.sender().parentWidget()
+        for r in range(self._table.rowCount()):
+            if self._table.cellWidget(r, 2) is w:
+                row = r; break
+        folder = QFileDialog.getExistingDirectory(self, "Select folder", "")
+        if not folder:
+            return
+        self._table.setItem(row, 1, QTableWidgetItem(folder))
+        name_it = self._table.item(row, 0)
+        if name_it is None or not name_it.text().strip():
+            self._table.setItem(row, 0, QTableWidgetItem(os.path.basename(folder)))
+
+    def _remove_row(self, row):
+        w = self.sender().parentWidget()
+        for r in range(self._table.rowCount()):
+            if self._table.cellWidget(r, 2) is w:
+                self._table.removeRow(r); return
+
+    def _add_from_subfolders(self):
+        parent = QFileDialog.getExistingDirectory(
+            self, "Select parent folder — each subfolder becomes a scenario", "")
+        if not parent:
+            return
+        try:
+            subs = sorted(d for d in os.listdir(parent)
+                          if os.path.isdir(os.path.join(parent, d)))
+        except OSError as ex:
+            QMessageBox.warning(self, "Add subfolders", str(ex)); return
+        if not subs:
+            QMessageBox.information(self, "Add subfolders",
+                                    "No subfolders found."); return
+        for d in subs:
+            self._add_row(d, os.path.join(parent, d))
+
+    def values(self):
+        """Return list of (name, folder) tuples for non-blank rows."""
+        out = []
+        for r in range(self._table.rowCount()):
+            n_it = self._table.item(r, 0); f_it = self._table.item(r, 1)
+            name   = n_it.text().strip() if n_it else ""
+            folder = f_it.text().strip() if f_it else ""
+            if name or folder:
+                out.append((name, folder))
+        return out
+
+    def _on_ok(self):
+        rows = self.values()
+        if not rows:
+            QMessageBox.warning(self, "Add Multiple",
+                                "Add at least one scenario."); return
+        errors = []; names_seen = set()
+        for i, (name, folder) in enumerate(rows, 1):
+            if not name:
+                errors.append(f"Row {i}: missing name")
+            elif name in self._existing:
+                errors.append(f"Row {i}: '{name}' already exists")
+            elif name in names_seen:
+                errors.append(f"Row {i}: '{name}' duplicated in this list")
+            else:
+                names_seen.add(name)
+            if not folder or not os.path.isdir(folder):
+                errors.append(f"Row {i}: folder not valid")
+        if errors:
+            QMessageBox.warning(self, "Add Multiple",
+                                "Fix these first:\n\n" + "\n".join(errors))
+            return
+        self.accept()
+
+
 # ── Main dialog ────────────────────────────────────────────────────────────────
 
 class RorbResultsDialog(QDockWidget):
@@ -221,12 +366,10 @@ class RorbResultsDialog(QDockWidget):
         self._crit_rows        = []
         self._env_rows         = []
         self._cmp_scenario_rows = []
+        self._set_path  = ''    # path of the loaded/saved scenario-set .json
+        self._set_dirty = False
         self._build_ui()
-        self._restore_state()
-        from qgis.core import QgsProject
-        proj = QgsProject.instance()
-        proj.cleared.connect(self._clear_all_scenarios)
-        proj.readProject.connect(self._clear_all_scenarios)
+        self._refresh_set_label()
 
     # ── UI ───────────────────────────────────────────────────────────────────
 
@@ -236,37 +379,96 @@ class RorbResultsDialog(QDockWidget):
         self.setWidget(_container)
         root = QVBoxLayout(_container)
 
-        # ── Scenario bar ──────────────────────────────────────────────────
-        sbar = QHBoxLayout()
-        sbar.addWidget(QLabel("Scenario:"))
-        self._scen_combo = QComboBox(); self._scen_combo.setMinimumWidth(200)
+        # ── Scenario-set banner ───────────────────────────────────────────
+        self._set_label = QLabel("")
+        self._set_label.setMinimumHeight(20)
+        root.addWidget(self._set_label)
+
+        # ── Top bar: scan progress + Rep-TP method ────────────────────────
+        # (Scenario management moved to the left panel below.)
+        # _scen_combo is kept as an invisible source-of-truth that mirrors
+        # the scenario list widget, so every existing code path that reads
+        # or writes the current scenario keeps working unchanged.
+        self._scen_combo = QComboBox()
+        self._scen_combo.hide()
         self._scen_combo.currentIndexChanged.connect(self._on_scenario_changed)
-        add_btn = QPushButton("Add…");    add_btn.setFixedWidth(60)
-        ren_btn = QPushButton("Rename…"); ren_btn.setFixedWidth(75)
-        rem_btn = QPushButton("Remove");  rem_btn.setFixedWidth(70)
-        clr_btn = QPushButton("Clear");   clr_btn.setFixedWidth(60)
-        add_btn.clicked.connect(self._add_scenario)
-        ren_btn.clicked.connect(self._rename_scenario)
-        rem_btn.clicked.connect(self._remove_scenario)
-        clr_btn.clicked.connect(self._clear_all_scenarios_prompt)
+
+        tbar = QHBoxLayout()
         self._scan_progress = QProgressBar(); self._scan_progress.setVisible(False)
         self._scan_progress.setMaximumWidth(200)
         self._scan_status = QLabel("")
         self._scan_status.setStyleSheet("color:gray;font-size:8pt;")
-        sbar.addWidget(self._scen_combo)
-        sbar.addWidget(add_btn); sbar.addWidget(ren_btn); sbar.addWidget(rem_btn)
-        sbar.addWidget(clr_btn)
-        sbar.addWidget(self._scan_progress)
-        sbar.addWidget(self._scan_status)
-        sbar.addStretch()
-        sbar.addWidget(QLabel("Rep TP:"))
+        tbar.addWidget(self._scan_progress)
+        tbar.addWidget(self._scan_status)
+        tbar.addStretch()
+        tbar.addWidget(QLabel("Rep TP:"))
         self._rep_method = QComboBox()
         self._rep_method.addItem("Closest to mean",   "closest")
         self._rep_method.addItem("Closest ≥ mean",    "above")
         self._rep_method.setFixedWidth(150)
         self._rep_method.currentIndexChanged.connect(self._on_rep_method_changed)
-        sbar.addWidget(self._rep_method)
-        root.addLayout(sbar)
+        tbar.addWidget(self._rep_method)
+
+        # Scenario-set persistence buttons (top-right)
+        tbar.addSpacing(12)
+        save_as_btn = QPushButton("Save As…")
+        save_btn    = QPushButton("Save")
+        import_btn  = QPushButton("Import…")
+        save_as_btn.setToolTip("Save the current list of scenarios (name + folder) "
+                               "to a new .json file.")
+        save_btn.setToolTip("Save the current scenario set to its existing file "
+                            "(prompts for a location if no file is loaded).")
+        import_btn.setToolTip("Load a previously saved scenario set (.json).")
+        save_as_btn.clicked.connect(self._save_scenario_set_as)
+        save_btn.clicked.connect(self._save_scenario_set)
+        import_btn.clicked.connect(self._load_scenario_set)
+        tbar.addWidget(save_as_btn)
+        tbar.addWidget(save_btn)
+        tbar.addWidget(import_btn)
+        root.addLayout(tbar)
+
+        # ── Main splitter: scenarios panel (left) + tabs (right) ──────────
+        main_split = QSplitter(Horizontal)
+
+        left = QWidget(); left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(4, 4, 4, 4); left_lay.setSpacing(4)
+
+        hdr = QLabel("Scenarios")
+        hdr.setStyleSheet("font-weight:bold; font-size:10pt; padding:2px 0;")
+        left_lay.addWidget(hdr)
+
+        self._scen_list = QListWidget()
+        self._scen_list.setMinimumWidth(210)
+        self._scen_list.setToolTip("Drag scenarios to reorder.")
+        self._scen_list.setDragEnabled(True)
+        self._scen_list.setAcceptDrops(True)
+        self._scen_list.setDropIndicatorShown(True)
+        self._scen_list.setDragDropMode(InternalMove)
+        self._scen_list.setDefaultDropAction(MoveAction)
+        self._scen_list.currentRowChanged.connect(self._on_scen_list_row_changed)
+        self._scen_list.itemDoubleClicked.connect(lambda _it: self._rename_scenario())
+        self._scen_list.model().rowsMoved.connect(
+            lambda *_: self._reorder_scenarios_from_list())
+        self._suspend_reorder = False
+        left_lay.addWidget(self._scen_list, 1)
+
+        # Add / Remove
+        add_row = QHBoxLayout(); add_row.setSpacing(4)
+        add_btn  = QPushButton("Add…")
+        many_btn = QPushButton("Add Multiple…")
+        add_btn.clicked.connect(self._add_scenario)
+        many_btn.clicked.connect(self._add_multiple_scenarios)
+        add_row.addWidget(add_btn); add_row.addWidget(many_btn)
+        left_lay.addLayout(add_row)
+
+        edit_row = QHBoxLayout(); edit_row.setSpacing(4)
+        ren_btn = QPushButton("Rename…"); ren_btn.clicked.connect(self._rename_scenario)
+        rem_btn = QPushButton("Remove");  rem_btn.clicked.connect(self._remove_scenario)
+        clr_btn = QPushButton("Clear");   clr_btn.clicked.connect(self._clear_all_scenarios_prompt)
+        edit_row.addWidget(ren_btn); edit_row.addWidget(rem_btn); edit_row.addWidget(clr_btn)
+        left_lay.addLayout(edit_row)
+
+        main_split.addWidget(left)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._tab_files(),    "Files")
@@ -274,7 +476,12 @@ class RorbResultsDialog(QDockWidget):
         self._tabs.addTab(self._tab_envelope(), "Duration Envelope")
         self._tabs.addTab(self._tab_viewer(),   "Hydrograph Viewer")
         self._tabs.addTab(self._tab_export(),   "Export")
-        root.addWidget(self._tabs)
+        main_split.addWidget(self._tabs)
+
+        main_split.setStretchFactor(0, 0)
+        main_split.setStretchFactor(1, 1)
+        main_split.setSizes([230, 920])
+        root.addWidget(main_split, 1)
 
         btn_row = QHBoxLayout(); btn_row.addStretch()
         btn_row.addWidget(QPushButton("Close", clicked=self.close))
@@ -773,7 +980,9 @@ class RorbResultsDialog(QDockWidget):
         ax.set_xlim(0.4, len(rows) + 0.6)
         ax.set_xlabel("Storm duration")
         ax.set_ylabel("Peak flow (m³/s)")
-        ax.set_title(f"{aep}  |  {node or 'outlet'}  |  "
+        scen = self._active or ''
+        prefix = f"{scen}  |  " if scen else ""
+        ax.set_title(f"{prefix}{aep}  |  {node or 'outlet'}  |  "
                      f"peak Q vs duration — spread over temporal patterns",
                      fontsize=10)
         ax.grid(True, axis='y', alpha=0.25)
@@ -1217,7 +1426,10 @@ class RorbResultsDialog(QDockWidget):
         hyeto_btn.setMinimumHeight(34); hyeto_btn.clicked.connect(self._export_hyetos)
         tp_btn = QPushButton("Export Temporal Patterns  (_tp.csv)")
         tp_btn.setMinimumHeight(34); tp_btn.clicked.connect(self._export_temporal)
+        xl_btn = QPushButton("Export Excel  (.xlsx — one sheet per case)")
+        xl_btn.setMinimumHeight(34); xl_btn.clicked.connect(self._export_excel)
         brow.addWidget(hydro_btn); brow.addWidget(hyeto_btn); brow.addWidget(tp_btn)
+        brow.addWidget(xl_btn)
         brow.addStretch()
         lay.addLayout(brow)
         return w
@@ -1228,7 +1440,6 @@ class RorbResultsDialog(QDockWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select output folder", "")
         if folder:
             self._exp_folder_edit.setText(folder)
-            self._save_state()
 
     def _exp_scenario(self):
         return self._exp_scen_combo.currentText() or self._active or None
@@ -1416,58 +1627,6 @@ class RorbResultsDialog(QDockWidget):
         key = (source, aep, dur_label, tp_num)
         return self._custom_stems.get(key, self._entry_stem(entry))
 
-    # ── Session persistence ───────────────────────────────────────────────────
-
-    def _save_state(self):
-        from qgis.core import QgsSettings
-        import json
-        s = QgsSettings()
-        saved = [{'name': n, 'folder': f}
-                 for n, f in self._scenario_folders.items()
-                 if n in self._scenarios and os.path.isdir(f)]
-        s.setValue('rorb_qgis/results_viewer/scenarios',   json.dumps(saved))
-        s.setValue('rorb_qgis/results_viewer/active',      self._active or '')
-        s.setValue('rorb_qgis/results_viewer/rep_method',
-                   self._rep_method.currentData() or 'closest')
-        s.setValue('rorb_qgis/results_viewer/export_folder',
-                   self._exp_folder_edit.text())
-
-    def _restore_state(self):
-        from qgis.core import QgsSettings
-        import json
-        s = QgsSettings()
-
-        rep = s.value('rorb_qgis/results_viewer/rep_method', 'closest')
-        idx = self._rep_method.findData(rep)
-        if idx >= 0:
-            self._rep_method.blockSignals(True)
-            self._rep_method.setCurrentIndex(idx)
-            self._rep_method.blockSignals(False)
-
-        folder = s.value('rorb_qgis/results_viewer/export_folder', '')
-        if folder:
-            self._exp_folder_edit.setText(folder)
-
-        raw = s.value('rorb_qgis/results_viewer/scenarios', '[]')
-        try:
-            saved = json.loads(raw)
-        except Exception:
-            saved = []
-
-        active = s.value('rorb_qgis/results_viewer/active', '')
-        for sc in saved:
-            name   = sc.get('name', '')
-            folder = sc.get('folder', '')
-            if name and folder and os.path.isdir(folder):
-                self._scenarios[name] = {}
-                self._scen_combo.addItem(name)
-                self._scan_scenario(name, folder)
-
-        if active:
-            idx = self._scen_combo.findText(active)
-            if idx >= 0:
-                self._scen_combo.setCurrentIndex(idx)
-
     # ── Scenario management ───────────────────────────────────────────────────
 
     def add_scenario(self, name, folder):
@@ -1486,6 +1645,7 @@ class RorbResultsDialog(QDockWidget):
         self._scen_combo.addItem(candidate)
         self._scen_combo.setCurrentText(candidate)
         self._scan_scenario(candidate, folder)
+        self._mark_set_dirty()
 
     def _add_scenario(self):
         dlg = _AddScenarioDialog(self)
@@ -1502,6 +1662,174 @@ class RorbResultsDialog(QDockWidget):
         self._scen_combo.addItem(name)
         self._scen_combo.setCurrentText(name)
         self._scan_scenario(name, folder)
+        self._mark_set_dirty()
+
+    def _add_multiple_scenarios(self):
+        dlg = _AddMultipleScenariosDialog(self, existing_names=self._scenarios.keys())
+        if dlg.exec() != DialogAccepted:
+            return
+        for name, folder in dlg.values():
+            # Reuse add_scenario() which auto-uniques the name and kicks off
+            # a background scan for each folder.
+            self.add_scenario(name, folder)
+
+    # ── Scenario-set banner ──────────────────────────────────────────────────
+
+    def _refresh_set_label(self):
+        if not hasattr(self, '_set_label'):
+            return
+        if self._set_path:
+            name = os.path.basename(self._set_path)
+            if self._set_dirty:
+                self._set_label.setText(f"Set:  {name}  •  unsaved changes")
+                self._set_label.setStyleSheet(
+                    "color:#dc2626; font-style:italic; font-weight:bold;"
+                    "padding:2px 4px;")
+            else:
+                self._set_label.setText(f"Set:  {name}")
+                self._set_label.setStyleSheet(
+                    "color:#166534; font-weight:bold; padding:2px 4px;")
+        else:
+            if self._scenarios and self._set_dirty:
+                self._set_label.setText("Set:  (unsaved)")
+                self._set_label.setStyleSheet(
+                    "color:#dc2626; font-style:italic; font-weight:bold;"
+                    "padding:2px 4px;")
+            else:
+                self._set_label.setText("Set:  (none loaded)")
+                self._set_label.setStyleSheet(
+                    "color:#6b7280; font-style:italic; padding:2px 4px;")
+
+    def _mark_set_dirty(self):
+        self._set_dirty = True
+        self._refresh_set_label()
+
+    def _mark_set_clean(self, path=None):
+        if path is not None:
+            self._set_path = path
+        self._set_dirty = False
+        self._refresh_set_label()
+
+    def _collect_scenario_pairs(self):
+        return [{'name': n, 'folder': self._scenario_folders.get(n, '')}
+                for n in self._scenarios.keys()
+                if self._scenario_folders.get(n)]
+
+    def _write_scenario_set(self, path, pairs):
+        import json
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({'scenarios': pairs}, f, indent=2)
+        except OSError as ex:
+            QMessageBox.critical(self, "Save Set", f"Could not save:\n{ex}")
+            return False
+        self._mark_set_clean(path)
+        QMessageBox.information(
+            self, "Save Set",
+            f"Saved {len(pairs)} scenario(s) to:\n{path}")
+        return True
+
+    def _save_scenario_set(self):
+        pairs = self._collect_scenario_pairs()
+        if not pairs:
+            QMessageBox.warning(self, "Save Set", "No scenarios to save."); return
+        path = getattr(self, '_set_path', '') or ''
+        if not path:
+            self._save_scenario_set_as()
+            return
+        self._write_scenario_set(path, pairs)
+
+    def _save_scenario_set_as(self):
+        pairs = self._collect_scenario_pairs()
+        if not pairs:
+            QMessageBox.warning(self, "Save Set", "No scenarios to save."); return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Scenario Set As", "", "Scenario set (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith('.json'):
+            path += '.json'
+        self._write_scenario_set(path, pairs)
+
+    def _load_scenario_set(self):
+        import json
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Scenario Set", "", "Scenario set (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, ValueError) as ex:
+            QMessageBox.critical(self, "Load Set", f"Could not read:\n{ex}")
+            return
+        # Accept either {"scenarios": [...]} or a bare list [...]
+        pairs = data.get('scenarios', data) if isinstance(data, dict) else data
+        if not isinstance(pairs, list) or not pairs:
+            QMessageBox.warning(self, "Load Set", "File contains no scenarios.")
+            return
+
+        append = False
+        if self._scenarios:
+            resp = QMessageBox.question(
+                self, "Load Set",
+                "Replace the current scenarios, or append the loaded ones?\n\n"
+                "Yes = Replace all,  No = Append,  Cancel = do nothing",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if resp == QMessageBox.Cancel:
+                return
+            if resp == QMessageBox.Yes:
+                self._clear_all_scenarios()
+            else:
+                append = True
+
+        valid, invalid = [], []
+        for sc in pairs:
+            if not isinstance(sc, dict):
+                continue
+            name   = str(sc.get('name', '')).strip()
+            folder = str(sc.get('folder', '')).strip()
+            if not name:
+                continue
+            if folder and os.path.isdir(folder):
+                valid.append((name, folder))
+            else:
+                invalid.append((name, folder))
+
+        # Let the user reassign any missing folders before loading.
+        if invalid:
+            dlg = _AddMultipleScenariosDialog(
+                self,
+                existing_names=list(self._scenarios.keys()) +
+                               [n for n, _ in valid],
+                initial_rows=invalid,
+                title="Fix Missing Folders",
+                intro=("These scenarios have missing or invalid folders. "
+                       "Browse to the new location for each, remove rows to "
+                       "skip them, then click 'Add All'."))
+            if dlg.exec() == DialogAccepted:
+                valid.extend(dlg.values())
+
+        for name, folder in valid:
+            self.add_scenario(name, folder)
+
+        # A pure replace/load = clean state for this file. An append means the
+        # on-disk file no longer matches memory, so it's dirty (and there is
+        # no single "current" set path).
+        if append:
+            self._set_path = ''
+            self._set_dirty = True
+        else:
+            self._set_path = path
+            self._set_dirty = False
+        self._refresh_set_label()
+
+        loaded  = len(valid)
+        skipped = len(pairs) - loaded
+        msg = f"Loaded {loaded} scenario(s)."
+        if skipped > 0:
+            msg += f"\nSkipped {skipped}."
+        QMessageBox.information(self, "Load Set", msg)
 
     def _rename_scenario(self):
         old = self._scen_combo.currentText()
@@ -1521,7 +1849,7 @@ class RorbResultsDialog(QDockWidget):
         self._scen_combo.setItemText(idx, new)
         self._scen_combo.blockSignals(False)
         self._refresh_all()
-        self._save_state()
+        self._mark_set_dirty()
 
     def _remove_scenario(self):
         name = self._scen_combo.currentText()
@@ -1534,7 +1862,7 @@ class RorbResultsDialog(QDockWidget):
         idx = self._scen_combo.findText(name)
         self._scen_combo.removeItem(idx)
         self._refresh_all()
-        self._save_state()
+        self._mark_set_dirty()
 
     def _clear_all_scenarios(self):
         self._scenarios.clear()
@@ -1544,7 +1872,10 @@ class RorbResultsDialog(QDockWidget):
         self._scen_combo.clear()
         self._scen_combo.blockSignals(False)
         self._refresh_all()
-        self._save_state()
+        # A full clear also detaches from any loaded set.
+        self._set_path = ''
+        self._set_dirty = False
+        self._refresh_set_label()
 
     def _clear_all_scenarios_prompt(self):
         if not self._scenarios:
@@ -1577,7 +1908,6 @@ class RorbResultsDialog(QDockWidget):
         self._scan_status.setText(
             f"'{scenario_name}': {ok}/{len(files)} files OK")
         self._refresh_all()
-        self._save_state()
 
     def _on_scan_error(self, scenario_name, msg):
         self._scan_progress.setVisible(False)
@@ -1629,14 +1959,77 @@ class RorbResultsDialog(QDockWidget):
         self._replot_envelope()
         self._refresh_exp_crit_table()
         self._refresh_preview()
-        self._save_state()
 
     def _on_scenario_changed(self):
         self._active = self._scen_combo.currentText() or None
+        self._sync_list_from_combo()
+        self._refresh_all()
+
+    # ── Scenario-list panel sync ─────────────────────────────────────────────
+
+    def _sync_list_from_combo(self):
+        """Mirror _scen_combo items and selection into the left-panel list."""
+        if not hasattr(self, '_scen_list'):
+            return
+        combo_names = [self._scen_combo.itemText(i)
+                       for i in range(self._scen_combo.count())]
+        list_names  = [self._scen_list.item(i).text()
+                       for i in range(self._scen_list.count())]
+        self._suspend_reorder = True
+        self._scen_list.blockSignals(True)
+        if combo_names != list_names:
+            self._scen_list.clear()
+            for n in combo_names:
+                self._scen_list.addItem(QListWidgetItem(n))
+        cur = self._scen_combo.currentText()
+        for i in range(self._scen_list.count()):
+            if self._scen_list.item(i).text() == cur:
+                self._scen_list.setCurrentRow(i)
+                break
+        self._scen_list.blockSignals(False)
+        self._suspend_reorder = False
+
+    def _on_scen_list_row_changed(self, row):
+        if row < 0 or row >= self._scen_list.count():
+            return
+        name = self._scen_list.item(row).text()
+        if name and name != self._scen_combo.currentText():
+            self._scen_combo.setCurrentText(name)
+
+    def _reorder_scenarios_from_list(self):
+        """Called after a drag-drop reorder inside _scen_list — apply the new
+        widget order to the underlying dicts, combo and downstream views."""
+        if getattr(self, '_suspend_reorder', False):
+            return
+        n = self._scen_list.count()
+        if n < 2:
+            return
+        names = [self._scen_list.item(i).text() for i in range(n)]
+        current_order = list(self._scenarios.keys())
+        if names == current_order:
+            return
+        if set(names) != set(current_order):
+            return
+
+        self._scenarios        = {k: self._scenarios[k]        for k in names}
+        self._scenario_folders = {k: self._scenario_folders.get(k, '')
+                                  for k in names}
+
+        active = self._active
+        self._scen_combo.blockSignals(True)
+        self._scen_combo.clear()
+        for k in names:
+            self._scen_combo.addItem(k)
+        if active in names:
+            self._scen_combo.setCurrentText(active)
+        self._scen_combo.blockSignals(False)
+
+        self._mark_set_dirty()
         self._refresh_all()
 
     def _refresh_all(self):
         self._active = self._scen_combo.currentText() or None
+        self._sync_list_from_combo()
         self._refresh_file_table()
         self._refresh_combos()
         self._refresh_compare_combos()
@@ -1892,7 +2285,10 @@ class RorbResultsDialog(QDockWidget):
                              label=f"Mean: {mean_pk:.3f} m³/s")
         dur_txt = self._dur_combo.currentText()
         self._ax.set_xlabel("Time (hr)"); self._ax.set_ylabel("Flow (m³/s)")
-        self._ax.set_title(f"{aep}  |  {dur_txt}  |  {node or 'outlet'}", fontsize=10)
+        scen = self._active or ''
+        prefix = f"{scen}  |  " if scen else ""
+        self._ax.set_title(f"{prefix}{aep}  |  {dur_txt}  |  {node or 'outlet'}",
+                           fontsize=10)
         self._ax.grid(True, alpha=0.25)
         if self._ax.lines: self._ax.legend(fontsize=7.5, loc='upper right')
         all_q = []
@@ -1988,6 +2384,192 @@ class RorbResultsDialog(QDockWidget):
         msg = f"Exported {len(saved)} file(s) to:\n{folder}"
         if skipped: msg += f"\n\nNo rainfall data: {', '.join(skipped)}"
         QMessageBox.information(self, "Export Hyetographs", msg)
+
+    # ── Excel export ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _safe_sheet_name(stem, used):
+        """Excel sheet names: <=31 chars, no []:*?/\\, unique within a book."""
+        name = re.sub(r'[\[\]:*?/\\]', '_', stem).strip() or "case"
+        name = name[:31]
+        if name in used:
+            for n in range(2, 100):
+                suffix = f"_{n}"
+                cand = name[:31 - len(suffix)] + suffix
+                if cand not in used:
+                    name = cand
+                    break
+        used.add(name)
+        return name
+
+    def _export_excel(self):
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            QMessageBox.warning(
+                self, "Export Excel",
+                "openpyxl is not available in this Python environment, so .xlsx "
+                "cannot be written.\n\nThe CSV exports work regardless.")
+            return
+
+        events = self._get_export_events()
+        if not events:
+            QMessageBox.warning(self, "Export", "No events selected."); return
+
+        folder = self._exp_folder_edit.text().strip()
+        scen   = self._exp_scenario() or ""
+        default = os.path.join(folder, f"{scen or 'RORB'}_results.xlsx") if folder else ""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Excel", default, "Excel workbook (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith('.xlsx'):
+            path += '.xlsx'
+
+        from .core.engine import parse_out_params, parse_out_peaks
+
+        node    = self._exp_node_combo.currentText() or None
+        bold    = Font(bold=True)
+        title_f = Font(bold=True, size=12)
+
+        wb = Workbook()
+        wb.remove(wb.active)          # drop the default empty sheet
+        used_names = set()
+        skipped    = []
+
+        for source, aep, dur_label, tp_num, entry in events:
+            q = self._get_hydro(entry, node)
+            if q is None:
+                skipped.append(f"{aep} {dur_label} TP{tp_num}")
+                continue
+            stem = self._resolve_stem(source, aep, dur_label, tp_num, entry)
+            ws   = wb.create_sheet(self._safe_sheet_name(stem, used_names))
+
+            out_path = entry.get('path', '')
+            params   = parse_out_params(out_path) if out_path else {}
+            peaks    = parse_out_peaks(out_path)  if out_path else {}
+            node_pk  = peaks.get(node) if node else None
+            if node_pk is None and peaks:
+                node_pk = list(peaks.values())[-1]
+
+            # ── Case identity + inputs, at the top of this case's sheet ────
+            ws.cell(row=1, column=1, value=f"RORB case: {stem}").font = title_f
+            r = 3
+            for label, val in (
+                    ("Scenario",         scen),
+                    ("Source",           "Critical event" if source.startswith("C") else "Extra event"),
+                    ("AEP",              aep),
+                    ("Duration",         dur_label),
+                    ("Temporal pattern", f"TP{tp_num}"),
+                    ("Node",             node or "outlet"),
+            ):
+                ws.cell(row=r, column=1, value=label).font = bold
+                ws.cell(row=r, column=2, value=val)
+                r += 1
+
+            r += 1
+            ws.cell(row=r, column=1, value="Inputs").font = title_f
+            r += 1
+            for label, key, fmt in (
+                    ("kc",                    'kc',             '0.000'),
+                    ("m",                     'm',              '0.000'),
+                    ("Initial loss (mm)",     'il',             '0.000'),
+                    ("Continuing loss (mm/h)", 'cl',            '0.000'),
+                    ("Loss model",            'loss_model',     None),
+                    ("Total area (km²)",      'total_area_km2', '0.000'),
+                    ("Av. distance (km)",     'avg_dist_km',    '0.000'),
+                    ("Time increment (hr)",   'dt_hr',          '0.0000'),
+                    ("Storm title",           'storm_title',    None),
+                    ("Vector file (.catg)",   'catg_path',      None),
+                    ("Storm file (.stm)",     'stm_path',       None),
+                    ("RORB version",          'rorb_version',   None),
+                    ("Date run",              'run_date',       None),
+            ):
+                ws.cell(row=r, column=1, value=label).font = bold
+                c = ws.cell(row=r, column=2, value=params.get(key))
+                if fmt and params.get(key) is not None:
+                    c.number_format = fmt
+                r += 1
+            ws.cell(row=r, column=1, value="Source .out").font = bold
+            ws.cell(row=r, column=2, value=os.path.basename(out_path))
+            r += 1
+            if entry.get('time_shifted'):
+                c = ws.cell(row=r, column=1,
+                            value="Note: RORB <v6.52 — time axis shifted back one "
+                                  "step so time starts at 0.00 h")
+                c.font = Font(italic=True, color="B45309")
+                r += 1
+
+            # ── Results at the selected node ──────────────────────────────
+            r += 1
+            ws.cell(row=r, column=1, value=f"Results at {node or 'outlet'}").font = title_f
+            r += 1
+            if node_pk:
+                for label, key, fmt in (("Peak discharge (m³/s)", 'peak',   '0.000'),
+                                        ("Time to peak (hr)",     'ttp',    '0.00'),
+                                        ("Volume (m³)",           'volume', '0.000E+00')):
+                    ws.cell(row=r, column=1, value=label).font = bold
+                    c = ws.cell(row=r, column=2, value=node_pk.get(key))
+                    if node_pk.get(key) is not None:
+                        c.number_format = fmt
+                    r += 1
+            else:
+                ws.cell(row=r, column=1, value="Peak discharge (m³/s)").font = bold
+                c = ws.cell(row=r, column=2, value=float(np.max(q)))
+                c.number_format = '0.000'
+                r += 1
+
+            # ── Time series ───────────────────────────────────────────────
+            r += 1
+            hdr = r
+            for col, text in ((1, "Time (hr)"), (2, "Flow (m³/s)"),
+                              (4, "Rain time (hr)"), (5, "Rainfall (mm)")):
+                c = ws.cell(row=hdr, column=col, value=text)
+                c.font = bold
+                c.alignment = Alignment(horizontal='center')
+
+            t = list(entry.get('time', [])[:len(q)])
+            qq = [float(v) for v in q]
+            if t:
+                dt = entry.get('dt') or (t[1] - t[0] if len(t) >= 2 else t[0])
+                if t[0] > 0:
+                    t = [0.0] + t; qq = [0.0] + qq
+                t.append(float(t[-1]) + dt); qq.append(0.0)
+            for i, (tv, qv) in enumerate(zip(t, qq)):
+                ws.cell(row=hdr + 1 + i, column=1, value=float(tv)).number_format = '0.0000'
+                ws.cell(row=hdr + 1 + i, column=2, value=qv).number_format = '0.000'
+
+            rain_t  = entry.get('rain_t',  [])
+            rain_mm = entry.get('rain_mm', [])
+            for i, (tv, rv) in enumerate(zip(rain_t, rain_mm)):
+                ws.cell(row=hdr + 1 + i, column=4, value=float(tv)).number_format = '0.0000'
+                ws.cell(row=hdr + 1 + i, column=5, value=float(rv)).number_format = '0.000'
+
+            ws.column_dimensions['A'].width = 24
+            ws.column_dimensions['B'].width = 30
+            for letter in ('D', 'E'):
+                ws.column_dimensions[letter].width = 15
+            ws.freeze_panes = ws.cell(row=hdr + 1, column=1)
+
+        if not wb.sheetnames:
+            QMessageBox.warning(self, "Export Excel", "Nothing to export."); return
+        try:
+            wb.save(path)
+        except OSError as e:
+            QMessageBox.critical(
+                self, "Export Excel",
+                f"Could not write the workbook:\n{e}\n\n"
+                "If the file is open in Excel, close it and try again.")
+            return
+
+        msg = (f"Exported {len(wb.sheetnames)} case sheet(s) to:\n{path}\n\n"
+               f"Each sheet holds that case's inputs at the top, then its "
+               f"hydrograph and hyetograph.")
+        if skipped:
+            msg += f"\n\nSkipped (no hydrograph): {', '.join(skipped)}"
+        QMessageBox.information(self, "Export Excel", msg)
 
     def _export_temporal(self):
         folder = self._exp_folder_edit.text().strip()

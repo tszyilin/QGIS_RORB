@@ -110,12 +110,16 @@ if PYQT6:
     HeaderStretch         = QHeaderView.ResizeMode.Stretch
     AllNonFixedFieldsGrow = QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
     DialogAccepted        = QDialog.DialogCode.Accepted
+    InternalMove          = QAbstractItemView.DragDropMode.InternalMove
+    MoveAction            = Qt.DropAction.MoveAction
 else:
     NoEditTriggers        = QAbstractItemView.NoEditTriggers
     SelectRows            = QAbstractItemView.SelectRows
     HeaderStretch         = QHeaderView.Stretch
     AllNonFixedFieldsGrow = QFormLayout.AllNonFixedFieldsGrow
     DialogAccepted        = QDialog.Accepted
+    InternalMove          = QAbstractItemView.InternalMove
+    MoveAction            = Qt.MoveAction
 
 # ── QFrame shapes / shadows ───────────────────────────────────────────────────
 from qgis.PyQt.QtWidgets import QFrame

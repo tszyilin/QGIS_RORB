@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.3
+version=3.8
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,26 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.8: Results Viewer: Hydrograph Viewer and Duration Envelope plot titles now
+    prepend the active scenario name (e.g. "MyCase  |  1% AEP  |  6 hr  |
+    outlet") so plots exported/screenshotted from multiple scenarios are
+    self-identifying.
+v3.7: Results Viewer: scenario list now reorders via drag-and-drop (Theme
+    Presenter style) — the ↑ Up / ↓ Down buttons under the list have been
+    removed. The underlying scenario dicts, hidden combo and downstream
+    tables/plots update to match the new order automatically.
+v3.6: Results Viewer: scenario-set persistence controls moved from the left
+    scenario panel to the top-right of the dialog and split into three buttons —
+    "Save As…" (write to a new .json), "Save" (overwrite the currently loaded
+    file, prompts if none), and "Import…" (load a saved set with replace/append).
+v3.5: Results Viewer: new "Save Set…" / "Load Set…" buttons on the scenario bar
+    — save the current list of scenarios (name + folder pairs) to a .json file
+    and reload it later, with a choice to replace the current list or append.
+    Portable across projects, complementing the per-project auto-persist.
+v3.4: Results Viewer: new "Add Multiple…" button on the scenario bar — opens a
+    dialog to enter/browse several (name, folder) scenario rows at once (or
+    auto-populate one row per subfolder of a chosen parent folder), so multiple
+    scenarios can be added in a single action instead of one at a time.
 v3.3: Results Viewer: new "Duration Envelope" tab — peak flow vs storm duration
     with a box-and-whisker for each duration showing the spread across all
     temporal patterns (box = Q1–Q3, whiskers = min–max, dots = individual TPs),
