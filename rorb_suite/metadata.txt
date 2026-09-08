@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.8
+version=3.9
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,15 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.9: Results Viewer: Hydrograph Viewer regains the rainfall overlay (bars for
+    the representative TP on a right-side blue axis). Export tab gains a TUFLOW
+    .tef import + editable filename template (~AEP~ / ~DUR~ / ~TP~ tokens —
+    reorder by editing the template). Export "Scenario" now follows the
+    left-panel selection (shown as green bold text instead of a dropdown).
+    Scenario-set .json persists the .tef path + naming template, and the
+    unsaved-changes banner now trips on .tef / template edits too. Fix:
+    x-axis auto-crop now includes the rainfall span so bars remain visible on
+    low-flow storms (e.g. 50% AEP on a large catchment).
 v3.8: Results Viewer: Hydrograph Viewer and Duration Envelope plot titles now
     prepend the active scenario name (e.g. "MyCase  |  1% AEP  |  6 hr  |
     outlet") so plots exported/screenshotted from multiple scenarios are

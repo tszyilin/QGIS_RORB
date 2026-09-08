@@ -29,6 +29,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
 from qgis.PyQt.QtGui import QFont, QColor
 
+from .core import tef as tef_mod
 from .compat import (
     AllDockWidgetAreas, RightDockWidgetArea,
     AlignRightVCenter, AlignCenter,
@@ -1081,6 +1082,7 @@ class RorbResultsDialog(QDockWidget):
         if HAS_MPL:
             self._fig = Figure(figsize=(7,4), tight_layout=True)
             self._ax  = self._fig.add_subplot(111)
+            self._ax2 = self._ax.twinx()   # rainfall on inverted right axis
             self._canvas = FigureCanvas(self._fig)
             splitter.addWidget(self._canvas)
         splitter.setSizes([170, 900]); root.addWidget(splitter)
@@ -1315,9 +1317,16 @@ class RorbResultsDialog(QDockWidget):
         w = QWidget(); lay = QVBoxLayout(w)
 
         box = QGroupBox("Export Settings"); form = QFormLayout(box)
-        self._exp_scen_combo = QComboBox(); self._exp_scen_combo.setMinimumWidth(200)
-        self._exp_scen_combo.currentIndexChanged.connect(self._on_exp_scen_changed)
-        form.addRow("Scenario:", self._exp_scen_combo)
+        # Kept as an invisible source-of-truth so the rest of the export code
+        # (via _exp_scenario()) still works unchanged.
+        self._exp_scen_combo = QComboBox(); self._exp_scen_combo.hide()
+        self._exp_scen_lbl = QLabel("(no scenario loaded)")
+        self._exp_scen_lbl.setStyleSheet(
+            "color:#166534; font-weight:bold; padding:2px 6px;")
+        self._exp_scen_lbl.setToolTip(
+            "Follows the scenario selected in the left panel — "
+            "switch there to export from a different scenario.")
+        form.addRow("Scenario (follows left panel):", self._exp_scen_lbl)
         self._exp_node_combo = QComboBox(); self._exp_node_combo.setMinimumWidth(240)
         self._exp_node_combo.currentIndexChanged.connect(self._on_exp_node_changed)
         form.addRow("Node (print point):", self._exp_node_combo)
@@ -1328,6 +1337,39 @@ class RorbResultsDialog(QDockWidget):
         folder_btn.clicked.connect(self._browse_export_folder)
         folder_row.addWidget(self._exp_folder_edit); folder_row.addWidget(folder_btn)
         form.addRow("Save folder:", folder_row)
+
+        # ── Naming (optional) — TUFLOW .tef labels + filename template ────
+        self._tef_maps = None
+        self._tef_path = None
+        self._name_template = ''
+        tef_row = QHBoxLayout()
+        tef_btn = QPushButton("Import .tef…"); tef_btn.setFixedWidth(110)
+        tef_btn.clicked.connect(self._browse_tef)
+        tef_row.addWidget(tef_btn)
+        self._tef_lbl = QLabel("(none loaded)")
+        self._tef_lbl.setStyleSheet("color:#6b7280; font-style:italic;")
+        tef_row.addWidget(self._tef_lbl); tef_row.addStretch()
+        clr_btn = QPushButton("Clear .tef"); clr_btn.setFixedWidth(90)
+        clr_btn.clicked.connect(self._clear_tef)
+        tef_row.addWidget(clr_btn)
+        form.addRow(".tef event file:", tef_row)
+
+        tmpl_row = QHBoxLayout()
+        self._name_template_edit = QLineEdit()
+        self._name_template_edit.setPlaceholderText(
+            "e.g. ~AEP~_~DUR~_~TP~   — leave blank to keep original filenames")
+        self._name_template_edit.textChanged.connect(self._on_name_template_changed)
+        tmpl_row.addWidget(self._name_template_edit)
+        reset_btn = QPushButton("~AEP~_~DUR~_~TP~"); reset_btn.setFixedWidth(150)
+        reset_btn.setToolTip("Insert the default template")
+        reset_btn.clicked.connect(
+            lambda: self._name_template_edit.setText('~AEP~_~DUR~_~TP~'))
+        tmpl_row.addWidget(reset_btn)
+        form.addRow("Filename template:", tmpl_row)
+        form.addRow("", QLabel(
+            "<i>Tokens <b>~AEP~ ~DUR~ ~TP~</b> get replaced by labels from the "
+            ".tef (or sensible defaults when no .tef is loaded). "
+            "Reorder by editing the template — e.g. <b>~DUR~_~AEP~_~TP~</b>.</i>"))
         lay.addWidget(box)
 
         splitter = QSplitter(Vertical)
@@ -1571,6 +1613,68 @@ class RorbResultsDialog(QDockWidget):
         m   = re.search(r'aep\d', raw, re.IGNORECASE)
         return raw[m.start():] if m else raw
 
+    def _templated_stem(self, aep, dur_min, tp_num):
+        """Filename stem from _name_template + _tef_maps, or '' if no template."""
+        if not self._name_template:
+            return ''
+        return tef_mod.apply_template(
+            self._name_template, aep, dur_min, tp_num,
+            self._tef_maps or {})
+
+    def _browse_tef(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import TUFLOW Event File",
+            self._tef_path or "", "TUFLOW Event File (*.tef);;All files (*)")
+        if not path:
+            return
+        if self._apply_tef_path(path, show_errors=True):
+            self._mark_set_dirty()
+
+    def _apply_tef_path(self, path, show_errors=False):
+        """Load a .tef into _tef_maps and update the label. Returns True on success."""
+        try:
+            maps = tef_mod.parse_tef(path)
+        except Exception as e:
+            if show_errors:
+                QMessageBox.warning(self, ".tef", f"Could not read:\n{e}")
+            return False
+        n = sum(len(v) for v in maps.values())
+        if n == 0:
+            if show_errors:
+                QMessageBox.warning(
+                    self, ".tef",
+                    "No ~DUR~ / ~AEP~ / ~TP~ event blocks found in that file.")
+            return False
+        self._tef_path = path
+        self._tef_maps = maps
+        self._tef_lbl.setText(
+            f"{os.path.basename(path)}  —  "
+            f"{len(maps['DUR'])} DUR, {len(maps['AEP'])} AEP, {len(maps['TP'])} TP")
+        self._tef_lbl.setStyleSheet("color:#166534; font-weight:bold;")
+        # Wipe row-level overrides so preview picks up the new labels
+        self._custom_stems.clear()
+        self._refresh_preview()
+        return True
+
+    def _clear_tef(self):
+        had_tef = self._tef_path is not None
+        self._tef_path = None
+        self._tef_maps = None
+        self._tef_lbl.setText("(none loaded)")
+        self._tef_lbl.setStyleSheet("color:#6b7280; font-style:italic;")
+        self._custom_stems.clear()
+        self._refresh_preview()
+        if had_tef and not getattr(self, '_suspend_export_dirty', False):
+            self._mark_set_dirty()
+
+    def _on_name_template_changed(self, text):
+        self._name_template = text.strip()
+        # Template change invalidates prior per-row edits.
+        self._custom_stems.clear()
+        self._refresh_preview()
+        if not getattr(self, '_suspend_export_dirty', False):
+            self._mark_set_dirty()
+
     def _refresh_preview(self):
         self._exp_preview_table.blockSignals(True)
         self._exp_preview_table.setRowCount(0)
@@ -1578,7 +1682,9 @@ class RorbResultsDialog(QDockWidget):
         for source, aep, dur_label, tp_num, entry in self._get_export_events():
             if entry and entry.get('time_shifted'):
                 has_shifted = True
-            default_stem = self._entry_stem(entry) if entry else "—"
+            dur_min = entry['parsed'][2] if entry and entry.get('parsed') else None
+            tmpl_stem = self._templated_stem(aep, dur_min, tp_num)
+            default_stem = tmpl_stem or (self._entry_stem(entry) if entry else "—")
             key  = (source, aep, dur_label, tp_num)
             name = self._custom_stems.get(key, default_stem)
             row  = self._exp_preview_table.rowCount()
@@ -1625,7 +1731,11 @@ class RorbResultsDialog(QDockWidget):
 
     def _resolve_stem(self, source, aep, dur_label, tp_num, entry):
         key = (source, aep, dur_label, tp_num)
-        return self._custom_stems.get(key, self._entry_stem(entry))
+        if key in self._custom_stems:
+            return self._custom_stems[key]
+        dur_min = entry['parsed'][2] if entry and entry.get('parsed') else None
+        tmpl = self._templated_stem(aep, dur_min, tp_num)
+        return tmpl or self._entry_stem(entry)
 
     # ── Scenario management ───────────────────────────────────────────────────
 
@@ -1717,9 +1827,16 @@ class RorbResultsDialog(QDockWidget):
 
     def _write_scenario_set(self, path, pairs):
         import json
+        payload = {
+            'scenarios': pairs,
+            'export': {
+                'tef_path': self._tef_path or '',
+                'name_template': self._name_template or '',
+            },
+        }
         try:
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump({'scenarios': pairs}, f, indent=2)
+                json.dump(payload, f, indent=2)
         except OSError as ex:
             QMessageBox.critical(self, "Save Set", f"Could not save:\n{ex}")
             return False
@@ -1768,6 +1885,7 @@ class RorbResultsDialog(QDockWidget):
         if not isinstance(pairs, list) or not pairs:
             QMessageBox.warning(self, "Load Set", "File contains no scenarios.")
             return
+        export_cfg = (data.get('export') if isinstance(data, dict) else None) or {}
 
         append = False
         if self._scenarios:
@@ -1812,6 +1930,21 @@ class RorbResultsDialog(QDockWidget):
 
         for name, folder in valid:
             self.add_scenario(name, folder)
+
+        # Restore export naming settings on replace-load (skip on append so
+        # the user's current tef/template survives). Suppress dirty marks so
+        # a freshly-loaded set is not immediately shown as "unsaved".
+        if not append:
+            tef_saved = str(export_cfg.get('tef_path', '')).strip()
+            tmpl_saved = str(export_cfg.get('name_template', ''))
+            self._suspend_export_dirty = True
+            try:
+                self._clear_tef()
+                self._name_template_edit.setText(tmpl_saved)
+                if tef_saved and os.path.isfile(tef_saved):
+                    self._apply_tef_path(tef_saved, show_errors=False)
+            finally:
+                self._suspend_export_dirty = False
 
         # A pure replace/load = clean state for this file. An append means the
         # on-disk file no longer matches memory, so it's dirty (and there is
@@ -2049,13 +2182,13 @@ class RorbResultsDialog(QDockWidget):
             combo.blockSignals(False)
 
         names = list(self._scenarios.keys())
-        cur_exp = self._exp_scen_combo.currentText()
         self._exp_scen_combo.blockSignals(True); self._exp_scen_combo.clear()
         for n in names: self._exp_scen_combo.addItem(n)
-        if cur_exp in names: self._exp_scen_combo.setCurrentText(cur_exp)
-        elif self._active and self._active in names:
+        if self._active and self._active in names:
             self._exp_scen_combo.setCurrentText(self._active)
         self._exp_scen_combo.blockSignals(False)
+        if hasattr(self, '_exp_scen_lbl'):
+            self._exp_scen_lbl.setText(self._active or "(no scenario loaded)")
 
         self._refresh_export_combos()
         self._refresh_envelope_combos()
@@ -2235,6 +2368,7 @@ class RorbResultsDialog(QDockWidget):
         if dur_min is not None:
             entries = [e for e in entries if e['parsed'][2] == dur_min]
         self._ax.clear()
+        self._ax2.clear()
 
         # Update "Critical" combo label with the actual critical duration
         self._dur_combo.blockSignals(True)
@@ -2283,6 +2417,29 @@ class RorbResultsDialog(QDockWidget):
             self._ax.axhline(mean_pk, color='#111827', linewidth=1.4,
                              linestyle='--', zorder=5,
                              label=f"Mean: {mean_pk:.3f} m³/s")
+        # Rainfall bars for the representative TP (same convention as Critical Events)
+        rep_entry = next((e for e in entries if e['parsed'][3] == rep_tp), None)
+        if rep_entry is None and entries:
+            rep_entry = entries[0]
+        if rep_entry is not None:
+            rain_t  = rep_entry.get('rain_t',  [])
+            rain_mm = rep_entry.get('rain_mm', [])
+            if len(rain_t) >= 2 and len(rain_mm) == len(rain_t):
+                dt = rain_t[1] - rain_t[0]
+                self._ax2.bar(rain_t, rain_mm, width=dt, align='edge',
+                              color='#3b82f6', alpha=0.35, zorder=1,
+                              label=f"Rainfall (TP{rep_entry['parsed'][3]})")
+                self._ax2.yaxis.set_label_position('right')
+                self._ax2.yaxis.tick_right()
+                self._ax2.set_ylabel("Rainfall (mm)", color='#3b82f6')
+                self._ax2.tick_params(axis='y', labelcolor='#3b82f6')
+                max_rain = max(rain_mm) if rain_mm else 1
+                self._ax2.set_ylim(max_rain * 4, 0)   # inverted
+            else:
+                self._ax2.set_yticks([])
+        else:
+            self._ax2.set_yticks([])
+
         dur_txt = self._dur_combo.currentText()
         self._ax.set_xlabel("Time (hr)"); self._ax.set_ylabel("Flow (m³/s)")
         scen = self._active or ''
@@ -2299,7 +2456,14 @@ class RorbResultsDialog(QDockWidget):
             t_ref = entries[0].get('time', [])
             pk_idx = int(np.argmax(all_q[:len(t_ref)]))
             pk_t = t_ref[pk_idx] if pk_idx < len(t_ref) else 10
-            self._ax.set_xlim(0, min(t_ref[-1] if t_ref else 100, pk_t*3+2))
+            xmax = min(t_ref[-1] if t_ref else 100, pk_t*3+2)
+            # Make sure the rainfall bars are visible even when flow is ~0
+            # (auto-crop would otherwise collapse to the storm-start region).
+            if rep_entry is not None:
+                rain_t = rep_entry.get('rain_t', [])
+                if rain_t:
+                    xmax = max(xmax, rain_t[-1])
+            self._ax.set_xlim(0, xmax)
 
         self._canvas.draw()
         summary_lines = []
