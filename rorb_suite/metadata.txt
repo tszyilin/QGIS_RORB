@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.9
+version=3.10
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,14 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.10: Results Viewer: Critical Events tab — CSV export now includes a
+    "Print Node" column, and a new "Export Critical XLSX (per-node sheets)…"
+    button lets you pick any subset of nodes and writes each node to its own
+    sheet (sheet name = node) in a single workbook. Fix: scenario scan workers
+    are now tracked per-scenario name instead of a single self._worker slot,
+    which prevented a rare QGIS crash ("QThread: Destroyed while thread is
+    still running") when loading a saved scenario set or using Add Multiple
+    on slow storage.
 v3.9: Results Viewer: Hydrograph Viewer regains the rainfall overlay (bars for
     the representative TP on a right-side blue axis). Export tab gains a TUFLOW
     .tef import + editable filename template (~AEP~ / ~DUR~ / ~TP~ tokens —

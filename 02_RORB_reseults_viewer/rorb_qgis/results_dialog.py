@@ -362,7 +362,13 @@ class RorbResultsDialog(QDockWidget):
         self._scenarios        = {}   # name -> files dict
         self._scenario_folders = {}   # name -> folder path
         self._active           = None
-        self._worker           = None
+        self._worker           = None   # legacy; unused (kept for backwards compat)
+        # scenario_name -> _ScanWorker. Holding a strong ref keeps each
+        # background QThread alive until it emits result/error. Overwriting a
+        # single self._worker slot lets Python GC a still-running QThread,
+        # which triggers a Qt fatal ("QThread: Destroyed while thread is
+        # still running") — reproducible via Import Set / Add Multiple.
+        self._workers          = {}
         self._tp_rows          = {}
         self._crit_rows        = []
         self._env_rows         = []
@@ -554,6 +560,9 @@ class RorbResultsDialog(QDockWidget):
         exp_btn = QPushButton("Export Critical CSV…")
         exp_btn.clicked.connect(self._export_critical_csv)
         hdr.addWidget(exp_btn)
+        xlsx_btn = QPushButton("Export Critical XLSX (per-node sheets)…")
+        xlsx_btn.clicked.connect(self._export_critical_xlsx)
+        hdr.addWidget(xlsx_btn)
         lay.addLayout(hdr)
 
         self._crit_table = QTableWidget(0, 7)
@@ -772,13 +781,149 @@ class RorbResultsDialog(QDockWidget):
         if not path: return
         with open(path, 'w', newline='') as f:
             w = csv_mod.writer(f)
-            w.writerow(["AEP", "Critical Duration", "Rep TP", "Num TPs",
+            w.writerow(["AEP", "Print Node", "Critical Duration", "Rep TP", "Num TPs",
                         "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
             for r in self._crit_rows:
-                w.writerow([r['aep'], r['crit_dur'], r['rep_tp'], r['n_tps'],
+                w.writerow([r['aep'], r.get('node') or 'outlet',
+                            r['crit_dur'], r['rep_tp'], r['n_tps'],
                             f"{r['mean_peak']:.4f}", f"{r['rep_peak']:.4f}",
                             f"{r['ttp']:.3f}"])
         QMessageBox.information(self, "Export", f"Exported:\n{path}")
+
+    def _pick_nodes_for_xlsx(self, nodes, default_node):
+        """Modal checklist to pick which nodes get their own sheet."""
+        from qgis.PyQt.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
+            QListWidgetItem, QPushButton, QDialogButtonBox)
+        from qgis.PyQt.QtCore import Qt as _Qt
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Export Critical XLSX — pick nodes")
+        dlg.setMinimumSize(360, 420)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("One sheet per checked node (sheet name = node):"))
+
+        lst = QListWidget()
+        for n in nodes:
+            it = QListWidgetItem(n)
+            it.setFlags(it.flags() | _Qt.ItemIsUserCheckable)
+            it.setCheckState(_Qt.Checked if n == default_node else _Qt.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst, 1)
+
+        btns = QHBoxLayout()
+        all_btn = QPushButton("Select all")
+        none_btn = QPushButton("Clear")
+        all_btn.clicked.connect(lambda: [lst.item(i).setCheckState(_Qt.Checked)
+                                          for i in range(lst.count())])
+        none_btn.clicked.connect(lambda: [lst.item(i).setCheckState(_Qt.Unchecked)
+                                           for i in range(lst.count())])
+        btns.addWidget(all_btn); btns.addWidget(none_btn); btns.addStretch()
+        lay.addLayout(btns)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+
+        if dlg.exec() != DialogAccepted:
+            return None
+        return [lst.item(i).text() for i in range(lst.count())
+                if lst.item(i).checkState() == _Qt.Checked]
+
+    def _critical_rows_for_node(self, node):
+        """Compute Critical Events rows for one node without touching UI state."""
+        out = []
+        for aep in self._all_aeps():
+            crit = self._compute_critical(aep, node)
+            if not crit:
+                continue
+            rep_e = crit['rep_entry']
+            q = self._get_hydro(rep_e, node)
+            t = rep_e.get('time', [])[:len(q)] if q is not None else []
+            ttp = 0.0
+            if q is not None and len(q):
+                ttp_map = rep_e.get('ttp_map', {})
+                if node and node in ttp_map:
+                    ttp = ttp_map[node]
+                elif ttp_map:
+                    ttp = list(ttp_map.values())[-1]
+                else:
+                    pk_idx = int(np.argmax(q))
+                    ttp = t[pk_idx] if pk_idx < len(t) else 0.0
+            crit['ttp'] = ttp; crit['aep'] = aep; crit['node'] = node
+            out.append(crit)
+        return out
+
+    def _export_critical_xlsx(self):
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+        except ImportError:
+            QMessageBox.warning(
+                self, "Export Critical XLSX",
+                "openpyxl is not available in this Python environment, so .xlsx "
+                "cannot be written.\n\nUse the CSV export instead.")
+            return
+
+        nodes = self._all_nodes()
+        if not nodes:
+            QMessageBox.warning(self, "Export Critical XLSX",
+                                "No scenarios/nodes loaded."); return
+
+        default_node = self._crit_node_combo.currentText() or (nodes[-1] if nodes else '')
+        picked = self._pick_nodes_for_xlsx(nodes, default_node)
+        if picked is None:
+            return
+        if not picked:
+            QMessageBox.warning(self, "Export Critical XLSX",
+                                "Pick at least one node."); return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Critical XLSX", "", "Excel workbook (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith('.xlsx'):
+            path += '.xlsx'
+
+        bold = Font(bold=True)
+        wb   = Workbook()
+        wb.remove(wb.active)
+        used = set()
+        headers = ["AEP", "Print Node", "Critical Duration", "Rep TP", "Num TPs",
+                   "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"]
+        empty_nodes = []
+        for node in picked:
+            rows = self._critical_rows_for_node(node)
+            ws = wb.create_sheet(self._safe_sheet_name(node, used))
+            for c, h in enumerate(headers, 1):
+                ws.cell(row=1, column=c, value=h).font = bold
+            if not rows:
+                empty_nodes.append(node)
+                continue
+            for i, r in enumerate(rows, start=2):
+                ws.cell(row=i, column=1, value=r['aep'])
+                ws.cell(row=i, column=2, value=node or 'outlet')
+                ws.cell(row=i, column=3, value=r['crit_dur'])
+                ws.cell(row=i, column=4, value=r['rep_tp'])
+                ws.cell(row=i, column=5, value=r['n_tps'])
+                ws.cell(row=i, column=6, value=round(r['mean_peak'], 4)
+                        ).number_format = '0.0000'
+                ws.cell(row=i, column=7, value=round(r['rep_peak'], 4)
+                        ).number_format = '0.0000'
+                ws.cell(row=i, column=8, value=round(r['ttp'], 3)
+                        ).number_format = '0.000'
+
+        try:
+            wb.save(path)
+        except Exception as ex:
+            QMessageBox.critical(self, "Export Critical XLSX",
+                                 f"Failed to save:\n{ex}")
+            return
+
+        msg = f"Exported {len(picked)} sheet(s) to:\n{path}"
+        if empty_nodes:
+            msg += ("\n\nNo critical data for: " + ", ".join(empty_nodes))
+        QMessageBox.information(self, "Export Critical XLSX", msg)
 
     # ── Tab 3: Duration Envelope  (Q vs duration, box-whisker over all TPs) ───
 
@@ -2023,11 +2168,23 @@ class RorbResultsDialog(QDockWidget):
         self._scan_progress.setVisible(True)
         self._scan_progress.setValue(0)
         self._scan_status.setText(f"Scanning '{name}' …")
-        self._worker = _ScanWorker(name, folder)
-        self._worker.progress.connect(self._on_scan_progress)
-        self._worker.result.connect(self._on_scan_done)
-        self._worker.error.connect(self._on_scan_error)
-        self._worker.start()
+        # If a previous scan for this same name is still running, wait for it
+        # to finish before replacing — otherwise the QThread we drop would be
+        # destroyed mid-run.
+        prev = self._workers.get(name)
+        if prev is not None and prev.isRunning():
+            prev.wait()
+        worker = _ScanWorker(name, folder)
+        worker.progress.connect(self._on_scan_progress)
+        worker.result.connect(self._on_scan_done)
+        worker.error.connect(self._on_scan_error)
+        self._workers[name] = worker
+        worker.start()
+
+    def _release_worker(self, scenario_name):
+        w = self._workers.pop(scenario_name, None)
+        if w is not None:
+            w.deleteLater()
 
     def _on_scan_progress(self, cur, total, fname):
         self._scan_progress.setMaximum(total)
@@ -2040,12 +2197,26 @@ class RorbResultsDialog(QDockWidget):
         ok = sum(1 for e in files.values() if e.get('parsed') and e.get('nodes'))
         self._scan_status.setText(
             f"'{scenario_name}': {ok}/{len(files)} files OK")
+        self._release_worker(scenario_name)
         self._refresh_all()
 
     def _on_scan_error(self, scenario_name, msg):
         self._scan_progress.setVisible(False)
         self._scan_status.setText(f"Error scanning '{scenario_name}'")
+        self._release_worker(scenario_name)
         QMessageBox.critical(self, "Scan error", msg)
+
+    def closeEvent(self, event):
+        # Wait for any outstanding scan workers so Qt does not fatal on a
+        # QThread that outlives its Python owner.
+        for w in list(self._workers.values()):
+            try:
+                if w.isRunning():
+                    w.wait(3000)
+            except Exception:
+                pass
+        self._workers.clear()
+        super().closeEvent(event)
 
     def _on_exp_scen_changed(self):
         # Clear extra events — they belong to the previous scenario
