@@ -370,6 +370,7 @@ class RorbResultsDialog(QDockWidget):
         # still running") — reproducible via Import Set / Add Multiple.
         self._workers          = {}
         self._tp_rows          = {}
+        self._rain_tp_rows     = {}
         self._crit_rows        = []
         self._env_rows         = []
         self._cmp_scenario_rows = []
@@ -1200,11 +1201,16 @@ class RorbResultsDialog(QDockWidget):
         self._hilite_chk = QCheckBox("Highlight rep TP"); self._hilite_chk.setChecked(True)
         self._hilite_chk.stateChanged.connect(self._replot)
         ctrl.addWidget(self._hilite_chk)
+        ctrl.addWidget(QLabel("Rainfall:"))
+        self._rain_style_combo = QComboBox()
+        self._rain_style_combo.addItems(["Bar", "Line", "Step"])
+        self._rain_style_combo.currentIndexChanged.connect(self._replot)
+        ctrl.addWidget(self._rain_style_combo)
         ctrl.addStretch(); root.addLayout(ctrl)
 
         splitter = QSplitter(Horizontal)
         left = QWidget(); llay = QVBoxLayout(left); llay.setContentsMargins(4,4,4,4)
-        llay.addWidget(QLabel("Temporal Patterns:"))
+        llay.addWidget(QLabel("Hydrograph Temporal Patterns:"))
         tbtn = QHBoxLayout()
         all_b = QPushButton("All"); all_b.setFixedWidth(38)
         none_b= QPushButton("None"); none_b.setFixedWidth(44)
@@ -1217,6 +1223,17 @@ class RorbResultsDialog(QDockWidget):
         self._tp_vbox.setSpacing(2); self._tp_vbox.addStretch()
         self._tp_scroll.setWidget(self._tp_inner)
         llay.addWidget(self._tp_scroll)
+
+        llay.addWidget(QLabel("Hyetograph Rainfall Bar (pick one):"))
+        self._rain_tp_group = QButtonGroup(w); self._rain_tp_group.setExclusive(True)
+        self._rain_tp_group.buttonToggled.connect(
+            lambda _btn, checked: checked and self._replot())
+        self._rain_scroll = QScrollArea(); self._rain_scroll.setWidgetResizable(True)
+        self._rain_inner = QWidget(); self._rain_vbox = QVBoxLayout(self._rain_inner)
+        self._rain_vbox.setSpacing(2); self._rain_vbox.addStretch()
+        self._rain_scroll.setWidget(self._rain_inner)
+        llay.addWidget(self._rain_scroll)
+
         self._peak_summary = QLabel("")
         self._peak_summary.setWordWrap(True)
         self._peak_summary.setFont(QFont("Courier New", 8))
@@ -1515,6 +1532,23 @@ class RorbResultsDialog(QDockWidget):
             "<i>Tokens <b>~AEP~ ~DUR~ ~TP~</b> get replaced by labels from the "
             ".tef (or sensible defaults when no .tef is loaded). "
             "Reorder by editing the template — e.g. <b>~DUR~_~AEP~_~TP~</b>.</i>"))
+
+        # ── Proportional Loss (PLR) — compact row; table lives in a popup ─
+        self._plr_rows = list(self._PLR_DEFAULTS)
+        plr_row = QHBoxLayout()
+        self._plr_enable_cb = QCheckBox("Enable")
+        self._plr_enable_cb.setToolTip(
+            "When ticked, 'Export Hyetographs with PLR' is enabled. "
+            "Each event's rainfall is multiplied by (1 − PLR), i.e. "
+            "PLR is the fraction lost (0.6 → 60% lost, 40% retained).")
+        self._plr_enable_cb.toggled.connect(self._sync_plr_button)
+        plr_edit_btn = QPushButton("Edit…"); plr_edit_btn.setFixedWidth(70)
+        plr_edit_btn.clicked.connect(self._open_plr_editor)
+        plr_row.addWidget(self._plr_enable_cb)
+        plr_row.addWidget(plr_edit_btn)
+        plr_row.addStretch()
+        form.addRow("Proportional Loss:", plr_row)
+
         lay.addWidget(box)
 
         splitter = QSplitter(Vertical)
@@ -1611,11 +1645,17 @@ class RorbResultsDialog(QDockWidget):
         hydro_btn.setMinimumHeight(34); hydro_btn.clicked.connect(self._export_hydros)
         hyeto_btn = QPushButton("Export Hyetographs  (_rf.csv)")
         hyeto_btn.setMinimumHeight(34); hyeto_btn.clicked.connect(self._export_hyetos)
+        hyeto_plr_btn = QPushButton("Export Hyetographs with PLR  (_rf.csv)")
+        hyeto_plr_btn.setMinimumHeight(34)
+        hyeto_plr_btn.clicked.connect(self._export_hyetos_plr)
+        self._hyeto_plr_btn = hyeto_plr_btn
+        hyeto_plr_btn.setEnabled(self._plr_enable_cb.isChecked())
         tp_btn = QPushButton("Export Temporal Patterns  (_tp.csv)")
         tp_btn.setMinimumHeight(34); tp_btn.clicked.connect(self._export_temporal)
         xl_btn = QPushButton("Export Excel  (.xlsx — one sheet per case)")
         xl_btn.setMinimumHeight(34); xl_btn.clicked.connect(self._export_excel)
-        brow.addWidget(hydro_btn); brow.addWidget(hyeto_btn); brow.addWidget(tp_btn)
+        brow.addWidget(hydro_btn); brow.addWidget(hyeto_btn)
+        brow.addWidget(hyeto_plr_btn); brow.addWidget(tp_btn)
         brow.addWidget(xl_btn)
         brow.addStretch()
         lay.addLayout(brow)
@@ -2500,17 +2540,45 @@ class RorbResultsDialog(QDockWidget):
         while self._tp_vbox.count():
             item = self._tp_vbox.takeAt(0)
             if item.widget(): item.widget().deleteLater()
+        while self._rain_vbox.count():
+            item = self._rain_vbox.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        for btn in list(self._rain_tp_group.buttons()):
+            self._rain_tp_group.removeButton(btn)
         self._tp_rows.clear()
+        self._rain_tp_rows.clear()
         aep  = self._aep_combo.currentText()
         node = self._node_combo_v.currentText() or None
-        if not aep: self._tp_vbox.addStretch(); return
+        if not aep:
+            self._tp_vbox.addStretch(); self._rain_vbox.addStretch(); return
         entries = self._entries_for_aep(aep)
         dur_min = self._dur_combo.currentData()
-        if dur_min is None:
-            crit = self._compute_critical(aep, node)
-            if crit: dur_min = crit['crit_min']
+        crit = self._compute_critical(aep, node)
+        if dur_min is None and crit:
+            dur_min = crit['crit_min']
         if dur_min is not None:
             entries = [e for e in entries if e['parsed'][2] == dur_min]
+        # Pick the default rain-bar TP: the rep TP for the currently shown duration.
+        default_rain_tp = None
+        if crit and dur_min == crit['crit_min']:
+            default_rain_tp = crit['rep_tp']
+        elif entries:
+            _method = (self._rep_method.currentData()
+                       if hasattr(self, '_rep_method') else 'closest')
+            _peaks = []
+            for _e in entries:
+                _q = self._get_hydro(_e, node)
+                _pk = float(np.max(_q)) if _q is not None and len(_q) else 0.0
+                _peaks.append((_e['parsed'][3], _pk))
+            if _peaks:
+                _mean = sum(p for _, p in _peaks) / len(_peaks)
+                if _method == 'above':
+                    _above = [(tp, pk) for tp, pk in _peaks if pk >= _mean]
+                    _pool = _above if _above else _peaks
+                    default_rain_tp = min(_pool, key=lambda x: abs(x[1] - _mean))[0]
+                else:
+                    default_rain_tp = min(_peaks, key=lambda x: abs(x[1] - _mean))[0]
+        self._rain_tp_group.blockSignals(True)
         for i, e in enumerate(sorted(entries, key=lambda x: x['parsed'][3])):
             tp_num = e['parsed'][3]; color = _TP_COLORS[i % len(_TP_COLORS)]
             row_w = QWidget(); row_l = QHBoxLayout(row_w)
@@ -2522,7 +2590,24 @@ class RorbResultsDialog(QDockWidget):
             row_l.addWidget(swatch); row_l.addWidget(chk); row_l.addStretch()
             self._tp_vbox.addWidget(row_w)
             self._tp_rows[tp_num] = (chk, color)
+
+            rrow_w = QWidget(); rrow_l = QHBoxLayout(rrow_w)
+            rrow_l.setContentsMargins(2,1,2,1)
+            rswatch = QLabel("  "); rswatch.setFixedSize(12,16)
+            rswatch.setStyleSheet(f"background:{color};border:1px solid #555;")
+            rb = QRadioButton(f"TP{tp_num}")
+            if tp_num == default_rain_tp: rb.setChecked(True)
+            self._rain_tp_group.addButton(rb, tp_num)
+            rrow_l.addWidget(rswatch); rrow_l.addWidget(rb); rrow_l.addStretch()
+            self._rain_vbox.addWidget(rrow_w)
+            self._rain_tp_rows[tp_num] = (rb, color)
+        # Fallback: if the default wasn't in the entries, check the first.
+        if self._rain_tp_rows and self._rain_tp_group.checkedButton() is None:
+            first_tp = sorted(self._rain_tp_rows.keys())[0]
+            self._rain_tp_rows[first_tp][0].setChecked(True)
+        self._rain_tp_group.blockSignals(False)
         self._tp_vbox.addStretch()
+        self._rain_vbox.addStretch()
 
     def _toggle_all_tps(self, state):
         for chk, _ in self._tp_rows.values(): chk.setChecked(state)
@@ -2588,8 +2673,16 @@ class RorbResultsDialog(QDockWidget):
             self._ax.axhline(mean_pk, color='#111827', linewidth=1.4,
                              linestyle='--', zorder=5,
                              label=f"Mean: {mean_pk:.3f} m³/s")
-        # Rainfall bars for the representative TP (same convention as Critical Events)
-        rep_entry = next((e for e in entries if e['parsed'][3] == rep_tp), None)
+        # Rainfall bars for the user-selected TP (radio group in the left panel);
+        # defaults to the representative TP for the current duration.
+        rain_tp = None
+        if hasattr(self, '_rain_tp_group'):
+            btn = self._rain_tp_group.checkedButton()
+            if btn is not None:
+                rain_tp = self._rain_tp_group.id(btn)
+        if rain_tp is None:
+            rain_tp = rep_tp
+        rep_entry = next((e for e in entries if e['parsed'][3] == rain_tp), None)
         if rep_entry is None and entries:
             rep_entry = entries[0]
         if rep_entry is not None:
@@ -2597,9 +2690,23 @@ class RorbResultsDialog(QDockWidget):
             rain_mm = rep_entry.get('rain_mm', [])
             if len(rain_t) >= 2 and len(rain_mm) == len(rain_t):
                 dt = rain_t[1] - rain_t[0]
-                self._ax2.bar(rain_t, rain_mm, width=dt, align='edge',
-                              color='#3b82f6', alpha=0.35, zorder=1,
-                              label=f"Rainfall (TP{rep_entry['parsed'][3]})")
+                style = (self._rain_style_combo.currentText()
+                         if hasattr(self, '_rain_style_combo') else "Bar")
+                rain_label = f"Rainfall (TP{rep_entry['parsed'][3]})"
+                if style == "Line":
+                    # Plot at bar-centre so it aligns with the bar equivalent.
+                    t_centre = [t + dt/2.0 for t in rain_t]
+                    self._ax2.plot(t_centre, rain_mm, color='#3b82f6',
+                                   linewidth=1.2, alpha=0.85, zorder=1,
+                                   label=rain_label)
+                elif style == "Step":
+                    self._ax2.step(rain_t, rain_mm, where='post',
+                                   color='#3b82f6', linewidth=1.2, alpha=0.85,
+                                   zorder=1, label=rain_label)
+                else:
+                    self._ax2.bar(rain_t, rain_mm, width=dt, align='edge',
+                                  color='#3b82f6', alpha=0.35, zorder=1,
+                                  label=rain_label)
                 self._ax2.yaxis.set_label_position('right')
                 self._ax2.yaxis.tick_right()
                 self._ax2.set_ylabel("Rainfall (mm)", color='#3b82f6')
@@ -2695,6 +2802,165 @@ class RorbResultsDialog(QDockWidget):
                 f"(RORB <v6.52 omits the Inc 0 row):\n" + file_lines
             )
         QMessageBox.information(self, "Export Hydrographs", msg)
+
+    # ── PLR (Proportional Loss per AEP) helpers ───────────────────────────
+
+    _PLR_DEFAULTS = [
+        (50.0, 0.92),
+        (20.0, 0.84),
+        (10.0, 0.77),
+        (5.0,  0.72),
+        (2.0,  0.65),
+        (1.0,  0.60),
+    ]
+
+    def _plr_map(self):
+        """Return {aep_percent_float: plr_float} from the stored rows."""
+        out = {}
+        for a, p in self._plr_rows:
+            try:
+                out[round(float(a), 6)] = float(p)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _sync_plr_button(self):
+        btn = getattr(self, '_hyeto_plr_btn', None)
+        if btn is not None:
+            btn.setEnabled(self._plr_enable_cb.isChecked())
+
+    def _open_plr_editor(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Proportional Loss (PLR) per AEP")
+        dlg.resize(420, 420)
+        v = QVBoxLayout(dlg)
+        eq_lbl = QLabel(
+            "<b>Equation</b><br>"
+            "&nbsp;&nbsp;<b>Rainfall<sub>exported</sub> = Rainfall<sub>original</sub> "
+            "&times; (1 &minus; PLR)</b><br><br>"
+            "<i>PLR is the <b>fraction of rainfall lost</b> for that AEP.<br>"
+            "e.g. PLR = 0.60 &rarr; 60% lost, 40% retained.<br>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;PLR = 0.92 &rarr; 92% lost, 8% retained.</i>")
+        eq_lbl.setStyleSheet(
+            "background:#eff6ff;border:1px solid #bfdbfe;"
+            "border-radius:3px;padding:6px 8px;")
+        eq_lbl.setWordWrap(True)
+        v.addWidget(eq_lbl)
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["AEP (%)", "Proportional Loss"])
+        table.horizontalHeader().setSectionResizeMode(HeaderStretch)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(SelectRows)
+
+        def add_row(aep_pct='', plr=''):
+            r = table.rowCount(); table.insertRow(r)
+            a_it = QTableWidgetItem('' if aep_pct == '' else f"{float(aep_pct):g}")
+            p_it = QTableWidgetItem('' if plr == '' else f"{float(plr):g}")
+            a_it.setTextAlignment(AlignCenter); p_it.setTextAlignment(AlignCenter)
+            table.setItem(r, 0, a_it); table.setItem(r, 1, p_it)
+
+        for a, p in self._plr_rows:
+            add_row(a, p)
+        v.addWidget(table)
+
+        btns = QHBoxLayout()
+        add_btn = QPushButton("Add row")
+        rem_btn = QPushButton("Remove selected")
+        rst_btn = QPushButton("Reset defaults")
+        add_btn.clicked.connect(lambda: add_row())
+        def rem():
+            rows = sorted({i.row() for i in table.selectedIndexes()}, reverse=True)
+            for r in rows: table.removeRow(r)
+        rem_btn.clicked.connect(rem)
+        def reset():
+            table.setRowCount(0)
+            for a, p in self._PLR_DEFAULTS: add_row(a, p)
+        rst_btn.clicked.connect(reset)
+        btns.addWidget(add_btn); btns.addWidget(rem_btn)
+        btns.addWidget(rst_btn); btns.addStretch()
+        ok_btn = QPushButton("OK"); ok_btn.setDefault(True)
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btns.addWidget(ok_btn); btns.addWidget(cancel_btn)
+        v.addLayout(btns)
+
+        if dlg.exec() == DialogAccepted:
+            rows = []
+            for r in range(table.rowCount()):
+                a_it = table.item(r, 0); p_it = table.item(r, 1)
+                if not a_it or not p_it: continue
+                try:
+                    a = float(str(a_it.text()).strip())
+                    p = float(str(p_it.text()).strip())
+                except ValueError:
+                    continue
+                rows.append((a, p))
+            self._plr_rows = rows
+
+    @staticmethod
+    def _aep_to_percent(aep_label):
+        """Convert AEP label ('50% AEP', '1 in 200', '1 EY') → percent float."""
+        import math
+        if not aep_label: return None
+        s = str(aep_label)
+        m = re.search(r'1 in (\d+)', s)
+        if m:
+            n = int(m.group(1))
+            return 100.0 / n if n else None
+        m = re.search(r'([\d.]+)', s)
+        if not m: return None
+        val = float(m.group(1))
+        if 'EY' in s.upper():
+            return (1 - math.exp(-val)) * 100.0
+        return val
+
+    def _lookup_plr(self, aep_label, plr_map):
+        pct = self._aep_to_percent(aep_label)
+        if pct is None: return None
+        for k, v in plr_map.items():
+            if abs(k - pct) < 1e-3:
+                return v
+        return None
+
+    def _export_hyetos_plr(self):
+        folder = self._exp_folder_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, "Export", "Select an output folder first."); return
+        events = self._get_export_events()
+        if not events:
+            QMessageBox.warning(self, "Export", "No events selected."); return
+        plr_map = self._plr_map()
+        if not plr_map:
+            QMessageBox.warning(self, "Export Hyetographs with PLR",
+                                "The PLR table is empty. Enter one row per AEP first.")
+            return
+        saved, skipped, missing_plr = [], [], []
+        for source, aep, dur_label, tp_num, entry in events:
+            rain_t  = entry.get('rain_t',  [])
+            rain_mm = entry.get('rain_mm', [])
+            if not rain_mm:
+                skipped.append(f"{aep} TP{tp_num}"); continue
+            plr = self._lookup_plr(aep, plr_map)
+            if plr is None:
+                missing_plr.append(f"{aep} TP{tp_num}"); continue
+            stem  = self._resolve_stem(source, aep, dur_label, tp_num, entry)
+            fname = os.path.join(folder, f"{stem}_rf.csv")
+            with open(fname, 'w', newline='') as f:
+                w = csv_mod.writer(f)
+                w.writerow(["Time (hr)", "Rainfall (mm)"])
+                retained = 1.0 - float(plr)
+                for tv, rv in zip(rain_t, rain_mm):
+                    w.writerow([f"{tv:.4f}", f"{float(rv) * retained:.4f}"])
+            saved.append(os.path.basename(fname))
+        msg = f"Exported {len(saved)} file(s) to:\n{folder}"
+        if skipped:
+            msg += f"\n\nNo rainfall data: {', '.join(skipped)}"
+        if missing_plr:
+            msg += ("\n\nNo PLR entry matched these events "
+                    f"(add a row for their AEP):\n  " +
+                    "\n  ".join(missing_plr))
+        QMessageBox.information(self, "Export Hyetographs with PLR", msg)
 
     def _export_hyetos(self):
         folder = self._exp_folder_edit.text().strip()

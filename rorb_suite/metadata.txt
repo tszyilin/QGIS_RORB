@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.10
+version=3.13
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,22 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.13: Results Viewer: Export tab — new "Proportional Loss (PLR) per AEP" table
+    (defaults 50→0.92, 20→0.84, 10→0.77, 5→0.72, 2→0.65, 1→0.60; editable, add/
+    remove rows, reset defaults) and a new "Export Hyetographs with PLR
+    (_rf_plr.csv)" button that multiplies each event's rainfall by the PLR
+    matching the event's AEP (percentage, "1 in N", and EY labels all match).
+    Events whose AEP has no PLR row are reported and skipped.
+v3.12: Results Viewer: Hydrograph Viewer — new "Rainfall:" dropdown in the top
+    control bar lets you switch the hyetograph style between Bar (default), Line
+    (plotted at bar centres) and Step (post-step). Line/Step keep the same blue
+    colour and inverted right-axis behaviour as the bars.
+v3.11: Results Viewer: Hydrograph Viewer — the left "Temporal Patterns" panel
+    is now split into two sections. Top (checkboxes, multi-select, all on by
+    default) controls which TP hydrographs are plotted; bottom (radio buttons,
+    single-select) picks which TP the rainfall bars are drawn for. The rainfall
+    radio defaults to the representative TP of the currently shown duration
+    (critical duration when "Critical (auto)" is selected).
 v3.10: Results Viewer: Critical Events tab — CSV export now includes a
     "Print Node" column, and a new "Export Critical XLSX (per-node sheets)…"
     button lets you pick any subset of nodes and writes each node to its own
