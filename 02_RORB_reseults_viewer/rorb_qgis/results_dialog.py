@@ -566,11 +566,6 @@ class RorbResultsDialog(QDockWidget):
         self._crit_node_combo = QComboBox(); self._crit_node_combo.setMinimumWidth(160)
         self._crit_node_combo.currentIndexChanged.connect(self._populate_critical_table)
         hdr.addWidget(self._crit_node_combo)
-        self._crit_vol_chk = QCheckBox("Show Volume (m³)")
-        self._crit_vol_chk.setToolTip(
-            "Trapezoidal integration of the Rep TP hydrograph (∫Q dt).")
-        self._crit_vol_chk.toggled.connect(self._on_crit_vol_toggled)
-        hdr.addWidget(self._crit_vol_chk)
         exp_btn = QPushButton("Export Critical CSV…")
         exp_btn.clicked.connect(self._export_critical_csv)
         hdr.addWidget(exp_btn)
@@ -596,6 +591,28 @@ class RorbResultsDialog(QDockWidget):
         self._crit_table.customContextMenuRequested.connect(
             self._crit_table_context_menu)
         lay.addWidget(self._crit_table)
+
+        plot_bar = QHBoxLayout()
+        plot_bar.addStretch()
+        self._crit_vol_chk = QCheckBox("Volume (m³)")
+        self._crit_vol_chk.setToolTip(
+            "Trapezoidal integration of the Rep TP hydrograph (∫Q dt).\n"
+            "On: shade the plot area under the curve, annotate the volume, "
+            "and show the Volume column in the table.")
+        self._crit_vol_chk.setStyleSheet("""
+            QCheckBox { spacing: 8px; font-weight: 600; color: #334155; }
+            QCheckBox::indicator {
+                width: 38px; height: 20px; border-radius: 10px;
+                background: #cbd5e1; border: 1px solid #94a3b8;
+            }
+            QCheckBox::indicator:checked {
+                background: #3b82f6; border: 1px solid #2563eb;
+            }
+            QCheckBox:checked { color: #1d4ed8; }
+        """)
+        self._crit_vol_chk.toggled.connect(self._on_crit_vol_toggled)
+        plot_bar.addWidget(self._crit_vol_chk)
+        lay.addLayout(plot_bar)
 
         if HAS_MPL:
             self._crit_fig    = Figure(figsize=(8, 3.5), tight_layout=True)
@@ -654,6 +671,7 @@ class RorbResultsDialog(QDockWidget):
 
     def _on_crit_vol_toggled(self, checked):
         self._crit_table.setColumnHidden(7, not checked)
+        self._on_crit_row_selected()
 
     def _on_crit_row_selected(self):
         if not HAS_MPL: return
@@ -664,17 +682,25 @@ class RorbResultsDialog(QDockWidget):
         q = self._get_hydro(crit['rep_entry'], node)
         t = crit['rep_entry'].get('time', [])[:len(q)] if q is not None else []
         if q is None: return
+        show_vol = self._crit_vol_chk.isChecked()
+        vol = crit.get('volume_m3', 0.0)
         self._crit_ax.clear()
         self._crit_ax2.clear()
+        if show_vol:
+            self._crit_ax.fill_between(
+                t, q, 0, color='steelblue', alpha=0.25,
+                label=f"Volume = {vol:,.0f} m³")
         self._crit_ax.plot(t, q, color='steelblue', linewidth=2,
                            label=f"Rep TP{crit['rep_tp']}  ({crit['rep_peak']:.3f} m³/s)")
         self._crit_ax.axhline(crit['mean_peak'], color='#111827', linewidth=1.2,
                               linestyle='--',
                               label=f"Mean  ({crit['mean_peak']:.3f} m³/s)")
         self._crit_ax.set_xlabel("Time (hr)"); self._crit_ax.set_ylabel("Flow (m³/s)")
-        self._crit_ax.set_title(
-            f"{crit['aep']}  |  Critical: {crit['crit_dur']}  |  "
-            f"Rep TP{crit['rep_tp']}  |  {node or 'outlet'}", fontsize=9)
+        title = (f"{crit['aep']}  |  Critical: {crit['crit_dur']}  |  "
+                 f"Rep TP{crit['rep_tp']}  |  {node or 'outlet'}")
+        if show_vol:
+            title += f"  |  V = {vol:,.0f} m³"
+        self._crit_ax.set_title(title, fontsize=9)
         self._crit_ax.grid(True, alpha=0.25); self._crit_ax.legend(fontsize=8)
         if t:
             pk_t = t[int(np.argmax(q))]

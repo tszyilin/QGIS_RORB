@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.14
+version=3.15
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,11 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.15: Results Viewer: Critical Events — the Volume switch is now a toggle-pill
+    control relocated to a bar directly above the plot. When ON, the hydrograph
+    plot shades the area under the Rep TP curve (∫Q dt) and the volume value is
+    annotated in the plot title and legend; the Volume column in the table and
+    the CSV/XLSX exports remain gated by the same switch.
 v3.14: Results Viewer: Critical Events tab — new "Show Volume (m³)" switch adds a
     Volume column computed by trapezoidal integration of the Rep TP hydrograph
     (∫Q dt). CSV and per-node XLSX exports also include the Volume column when
