@@ -84,6 +84,14 @@ def _parse_filename(fname):
     return None
 
 
+def _hydrograph_volume_m3(t_hr, q_m3s):
+    """Trapezoidal ∫Q dt. t in hours, Q in m³/s → volume in m³."""
+    n = min(len(t_hr), len(q_m3s))
+    if n < 2:
+        return 0.0
+    return float(np.trapz(q_m3s[:n], t_hr[:n])) * 3600.0
+
+
 def _aep_sort_key(aep_label):
     import math
     # '1 in N' → AEP% = 100/N
@@ -558,6 +566,11 @@ class RorbResultsDialog(QDockWidget):
         self._crit_node_combo = QComboBox(); self._crit_node_combo.setMinimumWidth(160)
         self._crit_node_combo.currentIndexChanged.connect(self._populate_critical_table)
         hdr.addWidget(self._crit_node_combo)
+        self._crit_vol_chk = QCheckBox("Show Volume (m³)")
+        self._crit_vol_chk.setToolTip(
+            "Trapezoidal integration of the Rep TP hydrograph (∫Q dt).")
+        self._crit_vol_chk.toggled.connect(self._on_crit_vol_toggled)
+        hdr.addWidget(self._crit_vol_chk)
         exp_btn = QPushButton("Export Critical CSV…")
         exp_btn.clicked.connect(self._export_critical_csv)
         hdr.addWidget(exp_btn)
@@ -566,10 +579,12 @@ class RorbResultsDialog(QDockWidget):
         hdr.addWidget(xlsx_btn)
         lay.addLayout(hdr)
 
-        self._crit_table = QTableWidget(0, 7)
+        self._crit_table = QTableWidget(0, 8)
         self._crit_table.setHorizontalHeaderLabels([
             "AEP", "Critical Duration", "Rep TP", "# TPs",
-            "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
+            "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)",
+            "Volume (m³)"])
+        self._crit_table.setColumnHidden(7, True)
         self._crit_table.horizontalHeader().setSectionResizeMode(HeaderStretch)
         self._crit_table.setEditTriggers(NoEditTriggers)
         self._crit_table.setAlternatingRowColors(True)
@@ -613,7 +628,9 @@ class RorbResultsDialog(QDockWidget):
                 else:
                     pk_idx = int(np.argmax(q))
                     ttp = t[pk_idx] if pk_idx < len(t) else 0.0
+            vol = _hydrograph_volume_m3(t, q) if q is not None and len(q) else 0.0
             crit['ttp'] = ttp; crit['aep'] = aep; crit['node'] = node
+            crit['volume_m3'] = vol
             self._crit_rows.append(crit)
             row = self._crit_table.rowCount()
             self._crit_table.insertRow(row)
@@ -628,10 +645,15 @@ class RorbResultsDialog(QDockWidget):
             for col, val, dec in (
                     (4, crit['mean_peak'], 3),
                     (5, crit['rep_peak'],  3),
-                    (6, ttp,               2)):
-                it = QTableWidgetItem(f"{val:.{dec}f}")
+                    (6, ttp,               2),
+                    (7, vol,               0)):
+                it = QTableWidgetItem(f"{val:,.{dec}f}" if col == 7
+                                      else f"{val:.{dec}f}")
                 it.setTextAlignment(AlignRightVCenter)
                 self._crit_table.setItem(row, col, it)
+
+    def _on_crit_vol_toggled(self, checked):
+        self._crit_table.setColumnHidden(7, not checked)
 
     def _on_crit_row_selected(self):
         if not HAS_MPL: return
@@ -780,15 +802,22 @@ class RorbResultsDialog(QDockWidget):
             QMessageBox.warning(self, "Export", "No data."); return
         path, _ = QFileDialog.getSaveFileName(self, "Export Critical Events", "", "CSV (*.csv)")
         if not path: return
+        include_vol = self._crit_vol_chk.isChecked()
         with open(path, 'w', newline='') as f:
             w = csv_mod.writer(f)
-            w.writerow(["AEP", "Print Node", "Critical Duration", "Rep TP", "Num TPs",
-                        "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"])
+            hdr = ["AEP", "Print Node", "Critical Duration", "Rep TP", "Num TPs",
+                   "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"]
+            if include_vol:
+                hdr.append("Volume (m3)")
+            w.writerow(hdr)
             for r in self._crit_rows:
-                w.writerow([r['aep'], r.get('node') or 'outlet',
-                            r['crit_dur'], r['rep_tp'], r['n_tps'],
-                            f"{r['mean_peak']:.4f}", f"{r['rep_peak']:.4f}",
-                            f"{r['ttp']:.3f}"])
+                row = [r['aep'], r.get('node') or 'outlet',
+                       r['crit_dur'], r['rep_tp'], r['n_tps'],
+                       f"{r['mean_peak']:.4f}", f"{r['rep_peak']:.4f}",
+                       f"{r['ttp']:.3f}"]
+                if include_vol:
+                    row.append(f"{r.get('volume_m3', 0.0):.2f}")
+                w.writerow(row)
         QMessageBox.information(self, "Export", f"Exported:\n{path}")
 
     def _pick_nodes_for_xlsx(self, nodes, default_node):
@@ -852,6 +881,8 @@ class RorbResultsDialog(QDockWidget):
                     pk_idx = int(np.argmax(q))
                     ttp = t[pk_idx] if pk_idx < len(t) else 0.0
             crit['ttp'] = ttp; crit['aep'] = aep; crit['node'] = node
+            crit['volume_m3'] = (_hydrograph_volume_m3(t, q)
+                                 if q is not None and len(q) else 0.0)
             out.append(crit)
         return out
 
@@ -890,8 +921,11 @@ class RorbResultsDialog(QDockWidget):
         wb   = Workbook()
         wb.remove(wb.active)
         used = set()
+        include_vol = self._crit_vol_chk.isChecked()
         headers = ["AEP", "Print Node", "Critical Duration", "Rep TP", "Num TPs",
                    "Mean Peak (m3/s)", "Rep Peak (m3/s)", "Time to Peak (hr)"]
+        if include_vol:
+            headers.append("Volume (m3)")
         empty_nodes = []
         for node in picked:
             rows = self._critical_rows_for_node(node)
@@ -913,6 +947,10 @@ class RorbResultsDialog(QDockWidget):
                         ).number_format = '0.0000'
                 ws.cell(row=i, column=8, value=round(r['ttp'], 3)
                         ).number_format = '0.000'
+                if include_vol:
+                    ws.cell(row=i, column=9,
+                            value=round(r.get('volume_m3', 0.0), 2)
+                            ).number_format = '#,##0.00'
 
         try:
             wb.save(path)

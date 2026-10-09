@@ -3,7 +3,7 @@ name=RORB Tools
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=RORB catchment preparation, control vector builder, and results viewer.
-version=3.13
+version=3.14
 author=Safin/Stephen
 email=tszyilin@gmail.com
 
@@ -21,6 +21,10 @@ homepage=https://github.com/tszyilin/QGIS_RORB
 hasProcessingProvider=yes
 
 changelog=
+v3.14: Results Viewer: Critical Events tab — new "Show Volume (m³)" switch adds a
+    Volume column computed by trapezoidal integration of the Rep TP hydrograph
+    (∫Q dt). CSV and per-node XLSX exports also include the Volume column when
+    the switch is enabled.
 v3.13: Results Viewer: Export tab — new "Proportional Loss (PLR) per AEP" table
     (defaults 50→0.92, 20→0.84, 10→0.77, 5→0.72, 2→0.65, 1→0.60; editable, add/
     remove rows, reset defaults) and a new "Export Hyetographs with PLR
